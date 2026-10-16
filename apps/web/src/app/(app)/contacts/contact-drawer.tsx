@@ -5,7 +5,7 @@ import { STATE_CODES } from '@csd/core';
 import type { Contact, ContactType } from '@csd/services';
 import { Button, Field, FormError, Input } from '@/components/ui';
 import { Drawer } from '@/components/kit';
-import { ApiFailure, apiFetch } from '@/lib/client';
+import { ApiFailure, apiFetch, newIdempotencyKey } from '@/lib/client';
 
 const STATES = Object.entries(STATE_CODES).sort((a, b) => a[1].localeCompare(b[1]));
 const selectCls =
@@ -36,6 +36,8 @@ export function ContactDrawer({
   onSaved: () => void;
 }) {
   const [f, setF] = useState(() => initialForm(contact));
+  // One key for as long as the form is open: a double submit cannot create two records.
+  const [idempotencyKey] = useState(newIdempotencyKey);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) =>
@@ -48,7 +50,12 @@ export function ContactDrawer({
     const body = { ...f, gstin: f.gstin.trim().toUpperCase() };
     try {
       if (contact) await apiFetch(`/api/v1/contacts/${contact.id}`, { method: 'PATCH', body });
-      else await apiFetch('/api/v1/contacts', { method: 'POST', body: { ...body, type } });
+      else
+        await apiFetch('/api/v1/contacts', {
+          method: 'POST',
+          body: { ...body, type },
+          idempotencyKey,
+        });
       onSaved();
     } catch (e) {
       setError(e instanceof ApiFailure ? e.message : 'Could not save.');

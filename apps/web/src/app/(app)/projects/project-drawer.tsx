@@ -5,7 +5,7 @@ import { parseRupees, todayIn } from '@csd/core';
 import type { Project } from '@csd/services';
 import { Button, Field, FormError, Input } from '@/components/ui';
 import { Drawer } from '@/components/kit';
-import { ApiFailure, apiFetch } from '@/lib/client';
+import { ApiFailure, apiFetch, newIdempotencyKey } from '@/lib/client';
 import { toRupeeInput } from '@/lib/format';
 
 export interface ClientOption {
@@ -77,6 +77,8 @@ export function ProjectDrawer({
   onSaved: (id: string) => void;
 }) {
   const [f, setF] = useState(() => initialForm(project));
+  // One key for as long as the form is open: a double submit cannot create two records.
+  const [idempotencyKey] = useState(newIdempotencyKey);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) =>
@@ -96,6 +98,7 @@ export function ProjectDrawer({
         const created = await apiFetch<{ id: string }>('/api/v1/projects', {
           method: 'POST',
           body,
+          idempotencyKey,
         });
         onSaved(created.id);
       }

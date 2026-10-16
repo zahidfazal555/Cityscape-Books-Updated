@@ -59,9 +59,47 @@ export function api<P = Record<string, never>>(
       if (!token) throw new DomainError('UNAUTHENTICATED', 'Please sign in.');
       const { actor } = await services().auth.authenticate(token);
       limits.api.take(actor.userId);
-      return fn({ ...ctx, actor });
+      const authed = { ...ctx, actor };
+      return req.method === 'POST' ? idempotent(req, authed, fn) : fn(authed);
     }),
   );
+}
+
+/**
+ * ENGINEERING-STANDARDS §4: every authenticated POST carries an Idempotency-Key. A retry or a
+ * double submit with the same key gets the first response instead of creating a second
+ * receipt, invoice or user.
+ */
+async function idempotent<P>(
+  req: NextRequest,
+  ctx: AuthedContext<P>,
+  fn: (ctx: AuthedContext<P>) => Promise<unknown>,
+): Promise<unknown> {
+  const key = req.headers.get('idempotency-key');
+  if (!key)
+    throw new DomainError('VALIDATION', 'Send an Idempotency-Key header with this request.');
+  const idem = services().idempotency;
+  const start = await idem.begin(ctx.actor, key, req.method, req.nextUrl.pathname, ctx.body);
+  if (start.kind === 'replay') {
+    return start.status === 204
+      ? new NextResponse(null, { status: 204 })
+      : NextResponse.json(start.body, { status: start.status });
+  }
+  try {
+    const result = await fn(ctx);
+    if (result instanceof Response) await idem.finish(ctx.actor, key, result.status, null);
+    else await idem.finish(ctx.actor, key, result === undefined ? 204 : 200, result);
+    return result;
+  } catch (error) {
+    const status = error instanceof DomainError ? error.status : 500;
+    await idem.finish(
+      ctx.actor,
+      key,
+      status,
+      error instanceof DomainError ? { error: error.toJSON() } : null,
+    );
+    throw error;
+  }
 }
 
 /** Health probes: no session, no body, no data beyond up/down. */

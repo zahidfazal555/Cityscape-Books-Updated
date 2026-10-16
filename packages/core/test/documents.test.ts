@@ -91,6 +91,15 @@ describe('document totals', () => {
     expect(() => computeDocument([line()], { placeOfSupply: '33', discountPct: 51 })).toThrow(
       expect.objectContaining({ field: 'discountPct' }),
     );
+    // BUG-076: bad precision or NaN is a 422 on the field, not a 500.
+    for (const bad of [7.555, Number.NaN]) {
+      expect(() => computeDocument([line()], { placeOfSupply: '33', discountPct: bad })).toThrow(
+        expect.objectContaining({ status: 422, field: 'discountPct' }),
+      );
+    }
+    expect(() => computeDocument([line({ qtyMilli: 1e13 })], { placeOfSupply: '33' })).toThrow(
+      'too large',
+    );
     expect(() =>
       computeDocument(
         Array.from({ length: 201 }, () => line()),

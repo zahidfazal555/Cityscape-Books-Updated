@@ -12,7 +12,7 @@ import {
 } from '@csd/core';
 import { Button, Field, FormError, Input } from '@/components/ui';
 import { Chips, Drawer, Pill, Segmented } from '@/components/kit';
-import { ApiFailure, apiFetch } from '@/lib/client';
+import { ApiFailure, apiFetch, newIdempotencyKey } from '@/lib/client';
 import { endOfIstDay } from '@/lib/format';
 import { LEVEL_LABEL, MODULE_LABEL, ROLE_LABEL } from '@/lib/labels';
 import type { ProjectOption, UserView } from './users-admin';
@@ -68,6 +68,8 @@ export function UserDrawer({
   const [projectsAll, setProjectsAll] = useState(init.projectsAll);
   const [projectIds, setProjectIds] = useState<string[]>(init.projectIds);
   const [expires, setExpires] = useState(init.expires);
+  // One key for as long as the form is open: a double submit cannot create two records.
+  const [idempotencyKey] = useState(newIdempotencyKey);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -94,7 +96,7 @@ export function UserDrawer({
     };
     try {
       if (user) await apiFetch(`/api/v1/users/${user.id}`, { method: 'PATCH', body });
-      else await apiFetch('/api/v1/users', { method: 'POST', body });
+      else await apiFetch('/api/v1/users', { method: 'POST', body, idempotencyKey });
       onSaved();
     } catch (e) {
       setError(e instanceof ApiFailure ? e.message : 'Could not save. Try again.');

@@ -46,3 +46,10 @@ export function todayIn(timeZone = 'Asia/Kolkata', now: Date = new Date()): IsoD
     day: '2-digit',
   }).format(now);
 }
+
+/** Calendar arithmetic on ISO dates (no time zones involved). */
+export function addDays(value: IsoDate, days: number): IsoDate {
+  const { y, m, d } = parseIsoDate(value);
+  const t = new Date(Date.UTC(y, m - 1, d + days));
+  return t.toISOString().slice(0, 10);
+}

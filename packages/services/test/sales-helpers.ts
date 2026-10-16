@@ -1,4 +1,4 @@
-import { gstinCheckChar, type Actor } from '@csd/core';
+import { fromDecimalString, gstinCheckChar, type Actor } from '@csd/core';
 import { ContactsService, ProjectsService, type InvoiceInput } from '../src/index.js';
 import { appPool, superPool } from './helpers.js';
 
@@ -31,7 +31,8 @@ export const invoiceInput = (
 ): InvoiceInput => ({
   projectId,
   invoiceDate: '2026-10-10',
-  dueDate: '2026-10-25',
+  // Far enough ahead that 'unpaid' never turns into 'overdue' while the suite is maintained.
+  dueDate: '2027-03-31',
   lines: [
     {
       description: 'Office interiors – stage 1',
@@ -60,7 +61,7 @@ export async function accountBalance(companyId: string, code: string): Promise<n
        FROM journal_line l JOIN account a ON a.id = l.account_id WHERE l.company_id = $1 AND a.code = $2`,
     [companyId, code],
   );
-  return Math.round(Number(rows[0]!.net) * 100);
+  return fromDecimalString(rows[0]!.net);
 }
 
 export async function setLock(companyId: string, date: string | null): Promise<void> {

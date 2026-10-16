@@ -4,7 +4,6 @@ import {
   authorize,
   can,
   fromDecimalString,
-  parseIsoDate,
   projectScope,
   stripPnl,
   toDecimalString,
@@ -15,19 +14,11 @@ import {
 import { allocateNumber, withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import { z } from 'zod';
-import { parse, pick, tenantOf as ctx } from './validation.js';
+import { isoDate, parse, pick, tenantOf as ctx } from './validation.js';
 
 export const PROJECT_STATUSES = ['active', 'on_hold', 'completed', 'cancelled'] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
-const isoDate = z.string().refine((d) => {
-  try {
-    parseIsoDate(d);
-    return true;
-  } catch {
-    return false;
-  }
-}, 'Enter a valid date.');
 const paise = z
   .number()
   .int('Amount must be in paise.')

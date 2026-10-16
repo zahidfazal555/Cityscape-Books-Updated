@@ -138,16 +138,61 @@ describe('client receipts', () => {
     await expect(superPool.query('DELETE FROM receipt WHERE id = $1', [r2.id])).rejects.toThrow();
   });
 
-  it('a locked period refuses new receipts in the database too, even if the app check is skipped', async () => {
+  it('BUG-072: the database itself refuses changes to a receipt in a locked period (app checks bypassed)', async () => {
     const { id } = await newInvoice();
+    const r = await receipts.record(admin, {
+      invoiceId: id,
+      receiptDate: '2026-10-11',
+      amount: 1_00,
+      mode: 'cash',
+    });
     await setLock(f.companyId, '2026-10-15');
+    const { withTenant } = await import('@csd/db');
+    const ctx = { companyId: f.companyId, userId: f.ownerId };
     await expect(
-      receipts.record(admin, {
-        invoiceId: id,
-        receiptDate: '2026-10-11',
-        amount: 1_00,
-        mode: 'cash',
-      }),
+      withTenant(appPool, ctx, (c) =>
+        c.query(`UPDATE receipt SET reference = 'tampered' WHERE id = $1`, [r.id]),
+      ),
     ).rejects.toMatchObject({ status: 423 });
+    await expect(
+      withTenant(appPool, ctx, (c) =>
+        c.query(`UPDATE receipt_allocation SET amount = 2 WHERE receipt_id = $1`, [r.id]),
+      ),
+    ).rejects.toMatchObject({ status: 423 });
+  });
+
+  it('BUG-073: view-only users cannot record; scoped users cannot touch other projects’ receipts', async () => {
+    const mine = await clientProject(owner);
+    const other = await clientProject(owner);
+    const invMine = await invoices.create(owner, invoiceInput(mine.projectId));
+    const invOther = await invoices.create(owner, invoiceInput(other.projectId));
+    const asst = actorFor(f, await makeUser(f.companyId, 'asstmgr'), 'asstmgr');
+    const base = { receiptDate: '2026-10-11', amount: 1_00, mode: 'cash' as const };
+    await expect(receipts.record(asst, { ...base, invoiceId: invMine.id })).rejects.toMatchObject({
+      status: 403,
+    });
+    const scoped = actorFor(f, await makeUser(f.companyId, 'admin'), 'admin', [mine.projectId]);
+    await expect(
+      receipts.record(scoped, { ...base, invoiceId: invOther.id }),
+    ).rejects.toMatchObject({ status: 404 });
+    const theirs = await receipts.record(owner, { ...base, invoiceId: invOther.id });
+    await expect(receipts.remove(scoped, theirs.id)).rejects.toMatchObject({ status: 404 });
+    const ok = await receipts.record(scoped, { ...base, invoiceId: invMine.id });
+    const listed = (await receipts.list(scoped)).map((r) => r.id);
+    expect(listed).toContain(ok.id);
+    expect(listed).not.toContain(theirs.id);
+  });
+
+  it('BUG-081: a blank cash reference is stored as NULL', async () => {
+    const { id } = await newInvoice();
+    const r = await receipts.record(admin, {
+      invoiceId: id,
+      receiptDate: '2026-10-11',
+      amount: 1_00,
+      mode: 'cash',
+      reference: '',
+    });
+    const { rows } = await superPool.query('SELECT reference FROM receipt WHERE id = $1', [r.id]);
+    expect(rows[0].reference).toBeNull();
   });
 });

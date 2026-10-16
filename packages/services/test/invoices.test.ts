@@ -33,6 +33,85 @@ beforeAll(async () => {
 afterEach(() => setLock(f.companyId, null));
 afterAll(closePools);
 
+describe('fifth review regressions (invoices)', () => {
+  it('BUG-067: status filters apply before the row limit', async () => {
+    const { projectId } = await clientProject(owner);
+    const { id } = await invoices.create(
+      owner,
+      invoiceInput(projectId, { invoiceDate: '2026-04-05', dueDate: '2026-04-20' }),
+    );
+    const overdue = await invoices.list(owner, { status: 'overdue' });
+    expect(overdue.map((i) => i.id)).toContain(id);
+    expect(overdue.every((i) => i.status === 'overdue')).toBe(true);
+  });
+
+  it('BUG-068: an edit that leaves out notes keeps them', async () => {
+    const { projectId } = await clientProject(owner);
+    const { id } = await invoices.create(
+      pm,
+      invoiceInput(projectId, { notes: 'Bank: HDFC; retention 5%' }),
+    );
+    const v = await invoices.get(pm, id);
+    await invoices.update(pm, id, {
+      version: v.version,
+      invoiceDate: v.invoiceDate,
+      dueDate: v.dueDate,
+      lines: v.lines,
+    });
+    expect((await invoices.get(pm, id)).notes).toBe('Bank: HDFC; retention 5%');
+  });
+
+  it('BUG-074: a zero-value invoice is a validation error on the lines', async () => {
+    const { projectId } = await clientProject(owner);
+    await expect(
+      invoices.create(
+        pm,
+        invoiceInput(projectId, {
+          lines: [{ description: 'Free visit', qtyMilli: 1000, rate: 0, gstRate: 0 }],
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 422, field: 'lines' });
+  });
+
+  it('BUG-075: the due date defaults to the client’s terms (else 15 days) and follows date edits', async () => {
+    const { clientId, projectId } = await clientProject(owner);
+    const a = await invoices.create(pm, { ...invoiceInput(projectId), dueDate: undefined });
+    expect((await invoices.get(pm, a.id)).dueDate).toBe('2026-10-25');
+    await new ContactsService(appPool).update(owner, clientId, { paymentTermsDays: 30 });
+    const b = await invoices.create(pm, { ...invoiceInput(projectId), dueDate: undefined });
+    const vb = await invoices.get(pm, b.id);
+    expect(vb.dueDate).toBe('2026-11-09');
+    await invoices.update(pm, b.id, {
+      version: vb.version,
+      invoiceDate: '2026-10-12',
+      lines: vb.lines,
+    });
+    expect((await invoices.get(pm, b.id)).dueDate).toBe('2026-11-11');
+  });
+
+  it('BUG-078: the credit-note journal is tagged as a credit note, not as the invoice', async () => {
+    const { projectId } = await clientProject(owner);
+    const { id } = await invoices.create(owner, invoiceInput(projectId));
+    const { creditNote } = await invoices.cancel(owner, id, {
+      cnDate: '2026-10-11',
+      reason: 'Duplicate',
+    });
+    const { rows } = await superPool.query(
+      `SELECT j.source_type FROM credit_note c JOIN journal j ON j.id = c.journal_id WHERE c.number = $1 AND c.company_id = $2`,
+      [creditNote, f.companyId],
+    );
+    expect(rows).toEqual([{ source_type: 'credit_note' }]);
+  });
+
+  it('archived clients cannot be invoiced', async () => {
+    const { clientId, projectId } = await clientProject(owner);
+    const { ProjectsService } = await import('../src/index.js');
+    await new ProjectsService(appPool).update(owner, projectId, { status: 'completed' });
+    await new ContactsService(appPool).archive(owner, clientId);
+    await expect(invoices.create(owner, invoiceInput(projectId))).rejects.toThrow('archived');
+  });
+});
+
 describe('tax invoices', () => {
   it('UAT 4: Tamil Nadu client → CGST + SGST; Karnataka client → IGST; journal balances', async () => {
     const tn = await clientProject(owner, '33');
@@ -134,14 +213,18 @@ describe('tax invoices', () => {
     await expect(
       invoices.update(pm, id, { ...v1, version: 1, lines: v1.lines }),
     ).rejects.toMatchObject({ status: 409 });
+    // A past date in the previous FY: only the same-FY rule can refuse it.
     await expect(
       invoices.update(pm, id, {
         version: 2,
-        invoiceDate: '2027-04-02',
-        dueDate: '2027-04-10',
+        invoiceDate: '2026-03-31',
+        dueDate: '2026-04-15',
         lines: v1.lines,
       }),
-    ).rejects.toMatchObject({ field: 'invoiceDate' });
+    ).rejects.toMatchObject({
+      field: 'invoiceDate',
+      message: 'The invoice date must stay in the same financial year.',
+    });
     const { rows } = await superPool.query(
       `SELECT count(*)::int AS n FROM journal WHERE source_id = $1`,
       [id],

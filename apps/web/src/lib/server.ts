@@ -5,6 +5,7 @@ import {
   AuthService,
   ContactsService,
   HibpBreachChecker,
+  IdempotencyService,
   InvoicesService,
   MemoryMailer,
   ProjectsService,
@@ -25,6 +26,7 @@ export interface Services {
   projects: ProjectsService;
   audit: AuditService;
   invoices: InvoicesService;
+  idempotency: IdempotencyService;
   receipts: ReceiptsService;
 }
 
@@ -60,6 +62,7 @@ export function services(): Services {
     projects: new ProjectsService(pool),
     audit: new AuditService(pool),
     invoices: new InvoicesService(pool),
+    idempotency: new IdempotencyService(pool),
     receipts: new ReceiptsService(pool),
   };
   return g.__csd;

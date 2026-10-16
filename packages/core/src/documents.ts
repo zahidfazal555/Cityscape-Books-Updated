@@ -61,9 +61,11 @@ export function formatQty(milli: QtyMilli): string {
 function assertLine(l: LineInput, i: number): void {
   if (!l.description.trim())
     throw new DomainError('VALIDATION', 'Describe every line.', `lines.${i}.description`);
-  if (!Number.isSafeInteger(l.qtyMilli) || l.qtyMilli <= 0 || l.qtyMilli > MAX_QTY_MILLI) {
+  if (!Number.isSafeInteger(l.qtyMilli) || l.qtyMilli <= 0) {
     throw new DomainError('VALIDATION', 'Quantity must be more than zero.', `lines.${i}.qty`);
   }
+  if (l.qtyMilli > MAX_QTY_MILLI)
+    throw new DomainError('VALIDATION', 'Quantity is too large.', `lines.${i}.qty`);
   assertPaise(l.rate, `lines.${i}.rate`);
   if (l.rate < 0)
     throw new DomainError('VALIDATION', 'Rate cannot be negative.', `lines.${i}.rate`);
@@ -90,7 +92,12 @@ export function computeDocument(
   if (lines.length === 0) throw new DomainError('VALIDATION', 'Add at least one line.', 'lines');
   if (lines.length > 200)
     throw new DomainError('VALIDATION', 'A document can have at most 200 lines.', 'lines');
-  const discountBp = toBasisPoints(opts.discountPct ?? 0);
+  let discountBp: number;
+  try {
+    discountBp = toBasisPoints(opts.discountPct ?? 0);
+  } catch {
+    throw new DomainError('VALIDATION', 'Discount may have at most 2 decimals.', 'discountPct');
+  }
   if (discountBp < 0 || discountBp > 5000) {
     throw new DomainError('VALIDATION', 'Discount must be between 0 and 50%.', 'discountPct');
   }

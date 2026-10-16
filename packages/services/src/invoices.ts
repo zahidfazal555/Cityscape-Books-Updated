@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   DomainError,
+  addDays,
   assertId,
   assertNotLocked,
   authorize,
@@ -8,8 +9,6 @@ import {
   computeDocument,
   financialYear,
   fromDecimalString,
-  invoiceStatus,
-  parseIsoDate,
   projectScope,
   toDecimalString,
   todayIn,
@@ -30,16 +29,14 @@ import {
 } from '@csd/db';
 import type pg from 'pg';
 import { z } from 'zod';
-import { parse, tenantOf as ctx } from './validation.js';
-
-const isoDate = z.string().refine((d) => {
-  try {
-    parseIsoDate(d);
-    return true;
-  } catch {
-    return false;
-  }
-}, 'Enter a valid date.');
+import {
+  companyRow,
+  isoDate,
+  parse,
+  pick,
+  tenantOf as ctx,
+  type CompanyRow,
+} from './validation.js';
 
 export const lineSchema = z.object({
   description: z.string().trim().min(1, 'Describe every line.').max(500),
@@ -57,7 +54,8 @@ export const lineSchema = z.object({
 const invoiceSchema = z.object({
   projectId: z.string().uuid('Choose a project.'),
   invoiceDate: isoDate,
-  dueDate: isoDate,
+  /** Defaults to the client's payment terms, else 15 days (FR-7.1). */
+  dueDate: isoDate.optional(),
   lines: z.array(lineSchema).min(1, 'Add at least one line.').max(200),
   notes: z.string().trim().max(2000).nullable().optional(),
 });
@@ -72,6 +70,8 @@ const cancelSchema = z.object({
 export type InvoiceInput = z.input<typeof invoiceSchema>;
 export type InvoiceUpdate = z.input<typeof updateSchema>;
 export type InvoiceLineInput = z.input<typeof lineSchema>;
+
+export const DEFAULT_PAYMENT_DAYS = 15;
 
 export interface InvoiceSummary {
   id: string;
@@ -130,11 +130,20 @@ export interface InvoiceDetail extends InvoiceSummary {
   creditNote: { number: string; date: IsoDate; reason: string } | null;
 }
 
-const SUMMARY = `
+/**
+ * Invoice rows with balance and a status derived in SQL (README §5), so list filters apply
+ * before any LIMIT. $1 = today's business date.
+ */
+const WITH_STATUS = `
   SELECT i.id, i.number, to_char(i.invoice_date, 'YYYY-MM-DD') AS invoice_date,
          to_char(i.due_date, 'YYYY-MM-DD') AS due_date, i.client_id, i.client_name, i.project_id,
-         p.code AS project_code, p.name AS project_name, i.is_inter_state, i.status, i.total::text,
-         b.received::text, b.balance::text
+         p.code AS project_code, p.name AS project_name, i.is_inter_state, i.total::text,
+         b.received::text, b.balance::text,
+         CASE WHEN i.status = 'cancelled' THEN 'cancelled'
+              WHEN b.balance <= 0 THEN 'paid'
+              WHEN i.due_date < $1::date THEN 'overdue'
+              WHEN b.balance < i.total THEN 'partially_paid'
+              ELSE 'unpaid' END AS status
     FROM invoice i
     JOIN project p ON p.id = i.project_id
     JOIN invoice_balance b ON b.invoice_id = i.id`;
@@ -150,15 +159,13 @@ interface SummaryRow {
   project_code: string;
   project_name: string;
   is_inter_state: boolean;
-  status: 'issued' | 'cancelled';
   total: string;
   received: string;
   balance: string;
+  status: InvoiceStatus;
 }
 
-function toSummary(r: SummaryRow, today: IsoDate): InvoiceSummary {
-  const total = fromDecimalString(r.total);
-  const balance = fromDecimalString(r.balance);
+function toSummary(r: SummaryRow): InvoiceSummary {
   return {
     id: r.id,
     number: r.number,
@@ -170,32 +177,11 @@ function toSummary(r: SummaryRow, today: IsoDate): InvoiceSummary {
     projectCode: r.project_code,
     projectName: r.project_name,
     interState: r.is_inter_state,
-    total,
+    total: fromDecimalString(r.total),
     received: fromDecimalString(r.received),
-    balance,
-    status: invoiceStatus(
-      { cancelled: r.status === 'cancelled', total, balance, dueDate: r.due_date },
-      today,
-    ),
+    balance: fromDecimalString(r.balance),
+    status: r.status,
   };
-}
-
-/** Sales journal (Tech Spec §3): Dr receivable / Cr sales + output GST, round-off either side. */
-export function invoiceJournalLines(
-  t: DocumentTotals,
-  clientId: string,
-  projectId: string,
-): JournalLineInput[] {
-  const lines: JournalLineInput[] = [
-    { accountCode: '1100', debit: t.total, contactId: clientId, projectId },
-    { accountCode: '4000', credit: t.taxable, projectId },
-  ];
-  if (t.cgst) lines.push({ accountCode: '2200', credit: t.cgst, projectId });
-  if (t.sgst) lines.push({ accountCode: '2201', credit: t.sgst, projectId });
-  if (t.igst) lines.push({ accountCode: '2202', credit: t.igst, projectId });
-  if (t.roundOff > 0) lines.push({ accountCode: '4900', credit: t.roundOff, projectId });
-  if (t.roundOff < 0) lines.push({ accountCode: '4900', debit: -t.roundOff, projectId });
-  return lines.filter((l) => (l.debit ?? 0) > 0 || (l.credit ?? 0) > 0);
 }
 
 interface LineRow {
@@ -231,18 +217,40 @@ function toLine(l: LineRow): InvoiceLine {
   };
 }
 
-async function journalOf(c: pg.PoolClient, invoiceId: string): Promise<string> {
-  const { rows } = await c.query<{ journal_id: string }>(
-    'SELECT journal_id FROM invoice WHERE id = $1',
-    [invoiceId],
-  );
-  const id = rows[0]?.journal_id;
-  if (!id) throw new DomainError('NOT_FOUND', 'Invoice not found.');
-  return id;
+/** Sales journal (Tech Spec §3): Dr receivable / Cr sales + output GST, round-off either side. */
+export function invoiceJournalLines(
+  t: DocumentTotals,
+  clientId: string,
+  projectId: string,
+): JournalLineInput[] {
+  const lines: JournalLineInput[] = [
+    { accountCode: '1100', debit: t.total, contactId: clientId, projectId },
+    { accountCode: '4000', credit: t.taxable, projectId },
+  ];
+  if (t.cgst) lines.push({ accountCode: '2200', credit: t.cgst, projectId });
+  if (t.sgst) lines.push({ accountCode: '2201', credit: t.sgst, projectId });
+  if (t.igst) lines.push({ accountCode: '2202', credit: t.igst, projectId });
+  if (t.roundOff > 0) lines.push({ accountCode: '4900', credit: t.roundOff, projectId });
+  if (t.roundOff < 0) lines.push({ accountCode: '4900', debit: -t.roundOff, projectId });
+  return lines.filter((l) => (l.debit ?? 0) > 0 || (l.credit ?? 0) > 0);
 }
 
-function toLines(lines: z.output<typeof lineSchema>[]): LineInput[] {
-  return lines.map((l) => ({ ...l }));
+/** Totals for validated lines; a tax invoice must be worth something. */
+function totalsFor(
+  lines: z.output<typeof lineSchema>[],
+  placeOfSupply: string,
+  company: CompanyRow,
+): DocumentTotals {
+  const t = computeDocument(
+    lines.map((l): LineInput => ({ ...l })),
+    {
+      placeOfSupply,
+      companyStateCode: company.state_code,
+    },
+  );
+  if (t.total <= 0)
+    throw new DomainError('VALIDATION', 'The invoice total must be more than zero.', 'lines');
+  return t;
 }
 
 /** Tax invoices and credit notes (Req §5, FR-3.3.4, UAT 4/5). */
@@ -255,16 +263,16 @@ export class InvoicesService {
   ): Promise<InvoiceSummary[]> {
     authorize(actor, 'invoices', 'view');
     const scope = projectScope(actor);
-    const today = todayIn();
     return withTenant(this.pool, ctx(actor), async (c) => {
       const { rows } = await c.query<SummaryRow>(
-        `${SUMMARY}
-          WHERE ($1::uuid[] IS NULL OR i.project_id = ANY($1::uuid[])) AND ($2::uuid IS NULL OR i.project_id = $2)
-          ORDER BY i.invoice_date DESC, i.number DESC LIMIT 500`,
-        [scope, filter.projectId ?? null],
+        `SELECT * FROM (${WITH_STATUS}) s
+          WHERE ($2::uuid[] IS NULL OR s.project_id = ANY($2::uuid[]))
+            AND ($3::uuid IS NULL OR s.project_id = $3)
+            AND ($4::text IS NULL OR s.status = $4)
+          ORDER BY s.invoice_date DESC, s.number DESC LIMIT 500`,
+        [todayIn(), scope, filter.projectId ?? null, filter.status ?? null],
       );
-      const all = rows.map((r) => toSummary(r, today));
-      return filter.status ? all.filter((i) => i.status === filter.status) : all;
+      return rows.map(toSummary);
     });
   }
 
@@ -279,12 +287,15 @@ export class InvoicesService {
     const data = parse(invoiceSchema, input);
     authorize(actor, 'invoices', 'edit');
     assertProjectInScope(actor, data.projectId);
-    assertDates(data.invoiceDate, data.dueDate);
+    assertNotFuture(data.invoiceDate);
     return withTenant(this.pool, ctx(actor), async (c) => {
       const company = await companyRow(c);
       assertNotLocked(data.invoiceDate, company.lock_date, 'invoiceDate');
       const party = await billTo(c, data.projectId);
-      const totals = computeDocument(toLines(data.lines), { placeOfSupply: party.state_code });
+      const dueDate =
+        data.dueDate ?? addDays(data.invoiceDate, party.payment_terms_days ?? DEFAULT_PAYMENT_DAYS);
+      assertDue(data.invoiceDate, dueDate);
+      const totals = totalsFor(data.lines, party.state_code, company);
       const id = randomUUID();
       const number = await allocateNumber(c, 'invoice', data.invoiceDate, company.fy_start_month);
       const journalId = await postJournal(c, {
@@ -312,7 +323,7 @@ export class InvoicesService {
           party.state_code,
           totals.interState,
           data.invoiceDate,
-          data.dueDate,
+          dueDate,
           ...money(totals),
           data.notes ?? null,
           journalId,
@@ -323,7 +334,7 @@ export class InvoicesService {
         action: 'create',
         entity: 'invoice',
         entityId: id,
-        after: { number, ...data, total: totals.total },
+        after: { number, ...data, dueDate, total: totals.total },
       });
       return { id, number };
     });
@@ -331,27 +342,19 @@ export class InvoicesService {
 
   /**
    * Edits an invoice that has no receipts (README §5): the old journal is reversed and a new one
-   * posted, so posted entries are never changed. The number and financial year stay the same.
+   * posted, so posted entries are never changed. Number and financial year stay the same. A due
+   * date left out is recomputed from the (new) invoice date.
    */
   async update(actor: Actor, id: string, input: InvoiceUpdate): Promise<void> {
     assertId(id, 'Invoice');
     const data = parse(updateSchema, input);
     authorize(actor, 'invoices', 'edit');
-    assertDates(data.invoiceDate, data.dueDate);
+    assertNotFuture(data.invoiceDate);
     await withTenant(this.pool, ctx(actor), async (c) => {
       const before = await this.load(c, actor, id, true);
       authorize(actor, 'invoices', 'edit', before.projectId);
       const company = await companyRow(c);
-      if (before.version !== data.version) {
-        throw new DomainError(
-          'CONFLICT',
-          'This invoice was changed by someone else. Reload it and try again.',
-        );
-      }
-      if (before.status === 'cancelled')
-        throw new DomainError('CONFLICT', 'A cancelled invoice cannot be edited.');
-      if (before.received > 0)
-        throw new DomainError('CONFLICT', 'An invoice with receipts cannot be edited.');
+      assertEditable(before, data.version);
       if (
         financialYear(data.invoiceDate, company.fy_start_month) !==
         financialYear(before.invoiceDate, company.fy_start_month)
@@ -364,7 +367,10 @@ export class InvoicesService {
       }
       assertNotLocked(before.invoiceDate, company.lock_date, 'invoiceDate');
       assertNotLocked(data.invoiceDate, company.lock_date, 'invoiceDate');
-      const totals = computeDocument(toLines(data.lines), { placeOfSupply: before.placeOfSupply });
+      const terms = await paymentTerms(c, before.clientId);
+      const dueDate = data.dueDate ?? addDays(data.invoiceDate, terms);
+      assertDue(data.invoiceDate, dueDate);
+      const totals = totalsFor(data.lines, before.placeOfSupply, company);
       await reverseJournal(
         c,
         await journalOf(c, id),
@@ -382,7 +388,14 @@ export class InvoicesService {
         `UPDATE invoice SET invoice_date = $2, due_date = $3, subtotal = $4, discount = $5, taxable = $6, cgst = $7,
                 sgst = $8, igst = $9, round_off = $10, total = $11, notes = $12, journal_id = $13, version = version + 1
           WHERE id = $1`,
-        [id, data.invoiceDate, data.dueDate, ...money(totals), data.notes ?? null, journalId],
+        [
+          id,
+          data.invoiceDate,
+          dueDate,
+          ...money(totals),
+          pick(data.notes, before.notes),
+          journalId,
+        ],
       );
       await c.query('DELETE FROM invoice_line WHERE invoice_id = $1', [id]);
       await insertLines(c, id, data.lines, totals);
@@ -414,26 +427,34 @@ export class InvoicesService {
           'cnDate',
         );
       }
-      if (data.cnDate > todayIn())
+      if (data.cnDate > todayIn()) {
         throw new DomainError(
           'VALIDATION',
           'The credit note date cannot be in the future.',
           'cnDate',
         );
+      }
       const company = await companyRow(c);
       assertNotLocked(data.cnDate, company.lock_date, 'cnDate');
+      const cnId = randomUUID();
       const number = await allocateNumber(c, 'creditNote', data.cnDate, company.fy_start_month);
+      // Tagged as its own document so journal-based reports can tell it from an edit reversal.
       const journalId = await reverseJournal(
         c,
         await journalOf(c, id),
         data.cnDate,
         `Credit note ${number} for ${inv.number}`,
+        {
+          sourceType: 'credit_note',
+          sourceId: cnId,
+        },
       );
       await c.query(
-        `INSERT INTO credit_note (company_id, number, invoice_id, cn_date, reason, taxable, cgst, sgst, igst, round_off,
-                                  total, journal_id, created_by)
-         VALUES (app_company_id(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, app_user_id())`,
+        `INSERT INTO credit_note (id, company_id, number, invoice_id, cn_date, reason, taxable, cgst, sgst, igst,
+                                  round_off, total, journal_id, created_by)
+         VALUES ($1, app_company_id(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, app_user_id())`,
         [
+          cnId,
           number,
           id,
           data.cnDate,
@@ -467,78 +488,99 @@ export class InvoicesService {
   ): Promise<InvoiceDetail> {
     // Lock first, then read: concurrent edits/cancels see each other's committed state.
     if (forUpdate) await c.query('SELECT 1 FROM invoice WHERE id = $1 FOR UPDATE', [id]);
-    const head = await c.query<
-      SummaryRow & {
-        version: number;
-        client_gstin: string | null;
-        client_address: string | null;
-        place_of_supply: string;
-        subtotal: string;
-        discount: string;
-        taxable: string;
-        cgst: string;
-        sgst: string;
-        igst: string;
-        round_off: string;
-        notes: string | null;
-      }
-    >(
-      `${SUMMARY.replace(
-        'SELECT i.id,',
-        `SELECT i.version, i.client_gstin, i.client_address, i.place_of_supply,
-         i.subtotal::text, i.discount::text, i.taxable::text, i.cgst::text, i.sgst::text, i.igst::text,
-         i.round_off::text, i.notes, i.id,`,
-      )} WHERE i.id = $1`,
-      [id],
+    const head = await c.query<SummaryRow & DetailColumns>(
+      `SELECT s.*, i.version, i.client_gstin, i.client_address, i.place_of_supply, i.subtotal::text,
+              i.discount::text, i.taxable::text, i.cgst::text, i.sgst::text, i.igst::text, i.round_off::text, i.notes
+         FROM (${WITH_STATUS}) s JOIN invoice i ON i.id = s.id WHERE s.id = $2`,
+      [todayIn(), id],
     );
     const r = head.rows[0];
     // Out-of-scope invoices are not found (FR-2.4.2), whatever the rights.
     if (!r || !can(actor, 'invoices', 'view', r.project_id))
       throw new DomainError('NOT_FOUND', 'Invoice not found.');
-    // One connection runs one query at a time (pg deprecates overlapping queries).
-    const lines = await c.query<LineRow>(
-      `SELECT description, sac_hsn, (qty * 1000)::bigint::text AS qty_milli, unit, rate::text, gst_rate::text,
-                amount::text, discount::text, taxable::text, cgst::text, sgst::text, igst::text
-           FROM invoice_line WHERE invoice_id = $1 ORDER BY sort`,
-      [id],
-    );
-    const receipts = await c.query<{
-      id: string;
-      number: string;
-      date: string;
-      amount: string;
-      mode: string;
-      reference: string | null;
-    }>(
-      `SELECT r.id, r.number, to_char(r.receipt_date, 'YYYY-MM-DD') AS date, a.amount::text, r.mode, r.reference
-           FROM receipt_allocation a JOIN receipt r ON r.id = a.receipt_id
-          WHERE a.invoice_id = $1 AND r.deleted_at IS NULL ORDER BY r.receipt_date, r.number`,
-      [id],
-    );
-    const cn = await c.query<{ number: string; date: string; reason: string }>(
-      `SELECT number, to_char(cn_date, 'YYYY-MM-DD') AS date, reason FROM credit_note WHERE invoice_id = $1`,
-      [id],
-    );
-    const p = fromDecimalString;
-    return {
-      ...toSummary(r, todayIn()),
-      version: r.version,
-      clientGstin: r.client_gstin,
-      clientAddress: r.client_address,
-      placeOfSupply: r.place_of_supply,
-      subtotal: p(r.subtotal),
-      discount: p(r.discount),
-      taxable: p(r.taxable),
-      cgst: p(r.cgst),
-      sgst: p(r.sgst),
-      igst: p(r.igst),
-      roundOff: p(r.round_off),
-      notes: r.notes,
-      lines: lines.rows.map(toLine),
-      receipts: receipts.rows.map((x) => ({ ...x, amount: p(x.amount) })),
-      creditNote: cn.rows[0] ?? null,
-    };
+    return { ...toSummary(r), ...detailFields(r), ...(await children(c, id)) };
   }
+}
+
+interface DetailColumns {
+  version: number;
+  client_gstin: string | null;
+  client_address: string | null;
+  place_of_supply: string;
+  subtotal: string;
+  discount: string;
+  taxable: string;
+  cgst: string;
+  sgst: string;
+  igst: string;
+  round_off: string;
+  notes: string | null;
+}
+
+function detailFields(r: DetailColumns) {
+  const p = fromDecimalString;
+  return {
+    version: r.version,
+    clientGstin: r.client_gstin,
+    clientAddress: r.client_address,
+    placeOfSupply: r.place_of_supply,
+    subtotal: p(r.subtotal),
+    discount: p(r.discount),
+    taxable: p(r.taxable),
+    cgst: p(r.cgst),
+    sgst: p(r.sgst),
+    igst: p(r.igst),
+    roundOff: p(r.round_off),
+    notes: r.notes,
+  };
+}
+
+/** Lines, live receipts and the credit note. One connection runs one query at a time. */
+async function children(
+  c: pg.PoolClient,
+  id: string,
+): Promise<Pick<InvoiceDetail, 'lines' | 'receipts' | 'creditNote'>> {
+  const lines = await c.query<LineRow>(
+    `SELECT description, sac_hsn, (qty * 1000)::bigint::text AS qty_milli, unit, rate::text, gst_rate::text,
+            amount::text, discount::text, taxable::text, cgst::text, sgst::text, igst::text
+       FROM invoice_line WHERE invoice_id = $1 ORDER BY sort`,
+    [id],
+  );
+  const receipts = await c.query<{
+    id: string;
+    number: string;
+    date: string;
+    amount: string;
+    mode: string;
+    reference: string | null;
+  }>(
+    `SELECT r.id, r.number, to_char(r.receipt_date, 'YYYY-MM-DD') AS date, a.amount::text, r.mode, r.reference
+       FROM receipt_allocation a JOIN receipt r ON r.id = a.receipt_id
+      WHERE a.invoice_id = $1 AND r.deleted_at IS NULL ORDER BY r.receipt_date, r.number`,
+    [id],
+  );
+  const cn = await c.query<{ number: string; date: string; reason: string }>(
+    `SELECT number, to_char(cn_date, 'YYYY-MM-DD') AS date, reason FROM credit_note WHERE invoice_id = $1`,
+    [id],
+  );
+  return {
+    lines: lines.rows.map(toLine),
+    receipts: receipts.rows.map((x) => ({ ...x, amount: fromDecimalString(x.amount) })),
+    creditNote: cn.rows[0] ?? null,
+  };
+}
+
+function assertEditable(inv: InvoiceDetail, version: number): void {
+  if (inv.version !== version) {
+    throw new DomainError(
+      'CONFLICT',
+      'This invoice was changed by someone else. Reload it and try again.',
+    );
+  }
+  if (inv.status === 'cancelled')
+    throw new DomainError('CONFLICT', 'A cancelled invoice cannot be edited.');
+  if (inv.received > 0)
+    throw new DomainError('CONFLICT', 'An invoice with receipts cannot be edited.');
 }
 
 function assertProjectInScope(actor: Actor, projectId: string): void {
@@ -547,8 +589,7 @@ function assertProjectInScope(actor: Actor, projectId: string): void {
   authorize(actor, 'invoices', 'edit', projectId);
 }
 
-/** A tax invoice is dated today or earlier; the due date is on or after it. */
-function assertDates(invoiceDate: IsoDate, dueDate: IsoDate): void {
+function assertNotFuture(invoiceDate: IsoDate): void {
   if (invoiceDate > todayIn()) {
     throw new DomainError(
       'VALIDATION',
@@ -556,22 +597,34 @@ function assertDates(invoiceDate: IsoDate, dueDate: IsoDate): void {
       'invoiceDate',
     );
   }
-  if (dueDate < invoiceDate)
+}
+
+function assertDue(invoiceDate: IsoDate, dueDate: IsoDate): void {
+  if (dueDate < invoiceDate) {
     throw new DomainError(
       'VALIDATION',
       'The due date cannot be before the invoice date.',
       'dueDate',
     );
+  }
 }
 
-async function companyRow(
-  c: pg.PoolClient,
-): Promise<{ lock_date: string | null; fy_start_month: number }> {
-  const { rows } = await c.query<{ lock_date: string | null; fy_start_month: number }>(
-    `SELECT to_char(lock_date, 'YYYY-MM-DD') AS lock_date, fy_start_month FROM company`,
+async function journalOf(c: pg.PoolClient, invoiceId: string): Promise<string> {
+  const { rows } = await c.query<{ journal_id: string }>(
+    'SELECT journal_id FROM invoice WHERE id = $1',
+    [invoiceId],
   );
-  if (!rows[0]) throw new DomainError('NOT_FOUND', 'Company not found.');
-  return rows[0];
+  const id = rows[0]?.journal_id;
+  if (!id) throw new DomainError('NOT_FOUND', 'Invoice not found.');
+  return id;
+}
+
+async function paymentTerms(c: pg.PoolClient, clientId: string): Promise<number> {
+  const { rows } = await c.query<{ days: number | null }>(
+    'SELECT payment_terms_days AS days FROM contact WHERE id = $1',
+    [clientId],
+  );
+  return rows[0]?.days ?? DEFAULT_PAYMENT_DAYS;
 }
 
 /** The project's client, as it stands now: snapshotted onto the invoice. */
@@ -583,8 +636,11 @@ async function billTo(c: pg.PoolClient, projectId: string) {
     address: string | null;
     state_code: string;
     status: string;
+    payment_terms_days: number | null;
+    archived: boolean;
   }>(
-    `SELECT p.client_id, k.name, k.gstin, k.address, k.state_code, p.status
+    `SELECT p.client_id, k.name, k.gstin, k.address, k.state_code, p.status, k.payment_terms_days,
+            (k.deleted_at IS NOT NULL) AS archived
        FROM project p JOIN contact k ON k.id = p.client_id WHERE p.id = $1 FOR SHARE OF p`,
     [projectId],
   );
@@ -592,6 +648,8 @@ async function billTo(c: pg.PoolClient, projectId: string) {
   if (!r) throw new DomainError('NOT_FOUND', 'Project not found.');
   if (r.status === 'cancelled')
     throw new DomainError('VALIDATION', 'This project is cancelled.', 'projectId');
+  if (r.archived)
+    throw new DomainError('VALIDATION', 'This project’s client is archived.', 'projectId');
   return r;
 }
 
@@ -601,30 +659,45 @@ function money(t: DocumentTotals): string[] {
   );
 }
 
+/** All lines in one statement: the gapless number-series row stays locked as briefly as possible. */
 async function insertLines(
   c: pg.PoolClient,
   invoiceId: string,
   lines: z.output<typeof lineSchema>[],
   totals: DocumentTotals,
 ): Promise<void> {
-  for (const [i, l] of lines.entries()) {
-    const t = totals.lines[i];
-    if (!t) throw new Error('line totals missing');
-    await c.query(
-      `INSERT INTO invoice_line (company_id, invoice_id, sort, description, sac_hsn, qty, unit, rate, gst_rate, amount,
-                                 discount, taxable, cgst, sgst, igst)
-       VALUES (app_company_id(), $1, $2, $3, $4, $5::numeric / 1000, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-      [
-        invoiceId,
-        i + 1,
-        l.description,
-        l.sacHsn,
-        l.qtyMilli,
-        l.unit,
-        toDecimalString(l.rate),
-        l.gstRate,
-        ...[t.amount, t.discount, t.taxable, t.cgst, t.sgst, t.igst].map(toDecimalString),
-      ],
-    );
-  }
+  const col = <T>(
+    f: (l: z.output<typeof lineSchema>, t: DocumentTotals['lines'][number], i: number) => T,
+  ): T[] =>
+    lines.map((l, i) => {
+      const t = totals.lines[i];
+      if (!t) throw new Error('line totals missing');
+      return f(l, t, i);
+    });
+  const d = toDecimalString;
+  await c.query(
+    `INSERT INTO invoice_line (company_id, invoice_id, sort, description, sac_hsn, qty, unit, rate, gst_rate, amount,
+                               discount, taxable, cgst, sgst, igst)
+     SELECT app_company_id(), $1, sort, description, sac_hsn, qty_milli::numeric / 1000, unit, rate, gst_rate, amount,
+            discount, taxable, cgst, sgst, igst
+       FROM unnest($2::int[], $3::text[], $4::text[], $5::bigint[], $6::text[], $7::numeric[], $8::numeric[],
+                   $9::numeric[], $10::numeric[], $11::numeric[], $12::numeric[], $13::numeric[], $14::numeric[])
+         AS t(sort, description, sac_hsn, qty_milli, unit, rate, gst_rate, amount, discount, taxable, cgst, sgst, igst)`,
+    [
+      invoiceId,
+      col((_l, _t, i) => i + 1),
+      col((l) => l.description),
+      col((l) => l.sacHsn),
+      col((l) => l.qtyMilli),
+      col((l) => l.unit),
+      col((l) => d(l.rate)),
+      col((l) => l.gstRate),
+      col((_l, t) => d(t.amount)),
+      col((_l, t) => d(t.discount)),
+      col((_l, t) => d(t.taxable)),
+      col((_l, t) => d(t.cgst)),
+      col((_l, t) => d(t.sgst)),
+      col((_l, t) => d(t.igst)),
+    ],
+  );
 }

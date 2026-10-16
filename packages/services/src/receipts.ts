@@ -7,7 +7,6 @@ import {
   can,
   formatInr,
   fromDecimalString,
-  parseIsoDate,
   projectScope,
   toDecimalString,
   todayIn,
@@ -18,7 +17,7 @@ import {
 import { allocateNumber, postJournal, reverseJournal, withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import { z } from 'zod';
-import { parse, tenantOf as ctx } from './validation.js';
+import { companyRow, isoDate, parse, tenantOf as ctx, type CompanyRow } from './validation.js';
 
 export const RECEIPT_MODES = ['bank', 'upi', 'cash', 'cheque'] as const;
 export type ReceiptMode = (typeof RECEIPT_MODES)[number];
@@ -34,14 +33,7 @@ const ACCOUNT_FOR_MODE: Record<ReceiptMode, '1000' | '1010' | '1020'> = {
 const receiptSchema = z
   .object({
     invoiceId: z.string().uuid('Choose an invoice.'),
-    receiptDate: z.string().refine((d) => {
-      try {
-        parseIsoDate(d);
-        return true;
-      } catch {
-        return false;
-      }
-    }, 'Enter a valid date.'),
+    receiptDate: isoDate,
     amount: z.number().int('Amount must be in paise.').positive('Amount must be more than zero.'),
     mode: z.enum(RECEIPT_MODES),
     reference: z.string().trim().max(100).nullable().optional(),
@@ -163,7 +155,7 @@ export class ReceiptsService {
           inv.project_id,
           toDecimalString(data.amount),
           data.mode,
-          data.mode === 'cash' ? (data.reference ?? null) : data.reference,
+          data.reference || null,
           data.receivedBy ?? null,
           account,
           journalId,
@@ -229,7 +221,7 @@ async function checkReceipt(
   c: pg.PoolClient,
   data: { receiptDate: string; amount: Paise },
   inv: { invoice_date: string; balance: string },
-): Promise<{ lock_date: string | null; fy_start_month: number }> {
+): Promise<CompanyRow> {
   if (data.receiptDate < inv.invoice_date) {
     throw new DomainError(
       'VALIDATION',
@@ -245,11 +237,7 @@ async function checkReceipt(
       'amount',
     );
   }
-  const { rows } = await c.query<{ lock_date: string | null; fy_start_month: number }>(
-    `SELECT to_char(lock_date, 'YYYY-MM-DD') AS lock_date, fy_start_month FROM company`,
-  );
-  const company = rows[0];
-  if (!company) throw new DomainError('NOT_FOUND', 'Company not found.');
+  const company = await companyRow(c);
   assertNotLocked(data.receiptDate, company.lock_date, 'receiptDate');
   return company;
 }
