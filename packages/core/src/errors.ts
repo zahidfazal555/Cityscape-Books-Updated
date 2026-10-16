@@ -1,7 +1,9 @@
 /** One error shape for the whole system: `{ code, message, field? }` mapped to an HTTP status. */
-export type ErrorCode = 'FORBIDDEN' | 'NOT_FOUND' | 'CONFLICT' | 'VALIDATION' | 'PERIOD_LOCKED';
+export type ErrorCode =
+  'UNAUTHENTICATED' | 'FORBIDDEN' | 'NOT_FOUND' | 'CONFLICT' | 'VALIDATION' | 'PERIOD_LOCKED';
 
 const STATUS: Record<ErrorCode, number> = {
+  UNAUTHENTICATED: 401,
   FORBIDDEN: 403,
   NOT_FOUND: 404,
   CONFLICT: 409,

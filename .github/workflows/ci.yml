@@ -46,6 +46,8 @@ jobs:
         run: pnpm test:unit
       - name: Integration tests (real Postgres 16)
         run: pnpm test:db
+      - name: Service tests (auth, users, settings)
+        run: pnpm test:services
       - name: Dependency audit (fail on high/critical)
         run: pnpm audit --audit-level high --prod
       - name: Secret scan (full history, pinned gitleaks CLI)

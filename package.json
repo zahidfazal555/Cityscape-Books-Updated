@@ -14,7 +14,8 @@
     "test": "pnpm -r test",
     "test:unit": "pnpm --filter @csd/core test",
     "test:db": "pnpm --filter @csd/db test",
-    "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test"
+    "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
+    "test:services": "pnpm --filter @csd/services test"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
