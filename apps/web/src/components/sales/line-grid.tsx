@@ -86,30 +86,36 @@ export function LineGrid({
   lines,
   onChange,
   totals,
+  fixedGst,
 }: {
   lines: LineDraft[];
   onChange: (lines: LineDraft[]) => void;
   totals: DocumentTotals | null;
+  /** One GST rate for the whole document (purchase orders): the per-line GST column is hidden. */
+  fixedGst?: number;
 }) {
+  const cols =
+    fixedGst === undefined
+      ? 'grid-cols-[2.6fr_0.9fr_0.7fr_0.7fr_1fr_0.7fr_1fr_28px]'
+      : 'grid-cols-[2.6fr_0.9fr_0.7fr_0.7fr_1fr_1fr_28px]';
   const set = (i: number, patch: Partial<LineDraft>) =>
     onChange(lines.map((l, j) => (j === i ? { ...l, ...patch } : l)));
   return (
     <div className="flex flex-col gap-2">
-      <div className="grid grid-cols-[2.6fr_0.9fr_0.7fr_0.7fr_1fr_0.7fr_1fr_28px] gap-1.5 text-[11px] font-semibold uppercase tracking-[.05em] text-muted">
+      <div
+        className={`grid ${cols} gap-1.5 text-[11px] font-semibold uppercase tracking-[.05em] text-muted`}
+      >
         <span>Description</span>
         <span>SAC/HSN</span>
         <span>Qty</span>
         <span>Unit</span>
         <span>Rate (₹)</span>
-        <span>GST</span>
+        {fixedGst === undefined ? <span>GST</span> : null}
         <span className="text-right">Amount</span>
         <span />
       </div>
       {lines.map((l, i) => (
-        <div
-          key={i}
-          className="grid grid-cols-[2.6fr_0.9fr_0.7fr_0.7fr_1fr_0.7fr_1fr_28px] items-center gap-1.5"
-        >
+        <div key={i} className={`grid ${cols} items-center gap-1.5`}>
           <input
             aria-label={`Line ${i + 1} description`}
             className={cell}
@@ -142,18 +148,20 @@ export function LineGrid({
             value={l.rate}
             onChange={(e) => set(i, { rate: e.target.value })}
           />
-          <select
-            aria-label={`Line ${i + 1} GST rate`}
-            className={cell}
-            value={l.gstRate}
-            onChange={(e) => set(i, { gstRate: Number(e.target.value) })}
-          >
-            {GST_RATES.map((r) => (
-              <option key={r} value={r}>
-                {r}%
-              </option>
-            ))}
-          </select>
+          {fixedGst === undefined ? (
+            <select
+              aria-label={`Line ${i + 1} GST rate`}
+              className={cell}
+              value={l.gstRate}
+              onChange={(e) => set(i, { gstRate: Number(e.target.value) })}
+            >
+              {GST_RATES.map((r) => (
+                <option key={r} value={r}>
+                  {r}%
+                </option>
+              ))}
+            </select>
+          ) : null}
           <span className="num text-right">
             {totals?.lines[i] ? rupees(totals.lines[i].amount) : '—'}
           </span>

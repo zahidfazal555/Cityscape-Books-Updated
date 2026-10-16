@@ -24,10 +24,11 @@ let refreshing: Promise<boolean> | null = null;
  */
 function requestHeaders(
   method: string,
-  init: { body?: unknown; idempotencyKey?: string },
+  init: { body?: unknown; raw?: Blob; idempotencyKey?: string },
 ): Record<string, string> {
   const headers: Record<string, string> = {};
-  if (init.body !== undefined) headers['content-type'] = 'application/json';
+  if (init.raw) headers['content-type'] = init.raw.type || 'application/octet-stream';
+  else if (init.body !== undefined) headers['content-type'] = 'application/json';
   if (method === 'POST') headers['idempotency-key'] = init.idempotencyKey ?? newIdempotencyKey();
   return headers;
 }
@@ -58,7 +59,8 @@ function refreshSession(): Promise<boolean> {
  */
 export async function apiFetch<T>(
   path: string,
-  init: { method?: string; body?: unknown; idempotencyKey?: string } = {},
+  /** `raw` sends a file as the request body (bill photo uploads). */
+  init: { method?: string; body?: unknown; raw?: Blob; idempotencyKey?: string } = {},
 ): Promise<T> {
   const method = init.method ?? 'GET';
   const headers = requestHeaders(method, init);
@@ -67,7 +69,7 @@ export async function apiFetch<T>(
       method,
       credentials: 'same-origin',
       headers,
-      body: init.body === undefined ? null : JSON.stringify(init.body),
+      body: init.raw ?? (init.body === undefined ? null : JSON.stringify(init.body)),
     });
   let res = await send();
   if (res.status === 401 && !PUBLIC_AUTH.has(path)) {
