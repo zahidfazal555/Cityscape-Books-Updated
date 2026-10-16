@@ -12,3 +12,5 @@ export * from './audit.js';
 export * from './invoices.js';
 export * from './receipts.js';
 export * from './idempotency.js';
+export * from './quotations.js';
+export * from './proformas.js';

@@ -7,6 +7,8 @@ import {
   HibpBreachChecker,
   IdempotencyService,
   InvoicesService,
+  ProformasService,
+  QuotationsService,
   MemoryMailer,
   ProjectsService,
   ReceiptsService,
@@ -26,6 +28,8 @@ export interface Services {
   projects: ProjectsService;
   audit: AuditService;
   invoices: InvoicesService;
+  quotations: QuotationsService;
+  proformas: ProformasService;
   idempotency: IdempotencyService;
   receipts: ReceiptsService;
 }
@@ -62,6 +66,8 @@ export function services(): Services {
     projects: new ProjectsService(pool),
     audit: new AuditService(pool),
     invoices: new InvoicesService(pool),
+    quotations: new QuotationsService(pool),
+    proformas: new ProformasService(pool),
     idempotency: new IdempotencyService(pool),
     receipts: new ReceiptsService(pool),
   };

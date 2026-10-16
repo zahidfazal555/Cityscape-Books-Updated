@@ -253,6 +253,77 @@ function totalsFor(
   return t;
 }
 
+export interface IssueInvoice {
+  projectId: string;
+  invoiceDate: IsoDate;
+  dueDate?: IsoDate | undefined;
+  lines: z.output<typeof lineSchema>[];
+  notes?: string | null | undefined;
+  quotationId?: string | null;
+  proformaId?: string | null;
+}
+
+/**
+ * Issues a tax invoice inside the caller's transaction (used by "New invoice" and by proforma
+ * conversion). The caller has already checked rights and project scope.
+ */
+export async function issueInvoiceTx(
+  c: pg.PoolClient,
+  data: IssueInvoice,
+): Promise<{ id: string; number: string; totals: DocumentTotals }> {
+  assertNotFuture(data.invoiceDate);
+  const company = await companyRow(c);
+  assertNotLocked(data.invoiceDate, company.lock_date, 'invoiceDate');
+  const party = await billTo(c, data.projectId);
+  const dueDate =
+    data.dueDate ?? addDays(data.invoiceDate, party.payment_terms_days ?? DEFAULT_PAYMENT_DAYS);
+  assertDue(data.invoiceDate, dueDate);
+  const totals = totalsFor(data.lines, party.state_code, company);
+  const id = randomUUID();
+  const number = await allocateNumber(c, 'invoice', data.invoiceDate, company.fy_start_month);
+  const journalId = await postJournal(c, {
+    txnDate: data.invoiceDate,
+    sourceType: 'invoice',
+    sourceId: id,
+    narration: `Tax invoice ${number}`,
+    lines: invoiceJournalLines(totals, party.client_id, data.projectId),
+  });
+  await c.query(
+    `INSERT INTO invoice (id, company_id, number, fy, project_id, client_id, client_name, client_gstin, client_address,
+                            place_of_supply, is_inter_state, invoice_date, due_date, subtotal, discount, taxable, cgst,
+                            sgst, igst, round_off, total, notes, journal_id, quotation_id, proforma_id, created_by)
+       VALUES ($1, app_company_id(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+               $20, $21, $22, $23, $24, app_user_id())`,
+    [
+      id,
+      number,
+      financialYear(data.invoiceDate, company.fy_start_month),
+      data.projectId,
+      party.client_id,
+      party.name,
+      party.gstin,
+      party.address,
+      party.state_code,
+      totals.interState,
+      data.invoiceDate,
+      dueDate,
+      ...money(totals),
+      data.notes ?? null,
+      journalId,
+      data.quotationId ?? null,
+      data.proformaId ?? null,
+    ],
+  );
+  await insertLines(c, id, data.lines, totals);
+  await writeAudit(c, {
+    action: 'create',
+    entity: 'invoice',
+    entityId: id,
+    after: { number, ...data, dueDate, total: totals.total },
+  });
+  return { id, number, totals };
+}
+
 /** Tax invoices and credit notes (Req §5, FR-3.3.4, UAT 4/5). */
 export class InvoicesService {
   constructor(private readonly pool: pg.Pool) {}
@@ -287,57 +358,8 @@ export class InvoicesService {
     const data = parse(invoiceSchema, input);
     authorize(actor, 'invoices', 'edit');
     assertProjectInScope(actor, data.projectId);
-    assertNotFuture(data.invoiceDate);
-    return withTenant(this.pool, ctx(actor), async (c) => {
-      const company = await companyRow(c);
-      assertNotLocked(data.invoiceDate, company.lock_date, 'invoiceDate');
-      const party = await billTo(c, data.projectId);
-      const dueDate =
-        data.dueDate ?? addDays(data.invoiceDate, party.payment_terms_days ?? DEFAULT_PAYMENT_DAYS);
-      assertDue(data.invoiceDate, dueDate);
-      const totals = totalsFor(data.lines, party.state_code, company);
-      const id = randomUUID();
-      const number = await allocateNumber(c, 'invoice', data.invoiceDate, company.fy_start_month);
-      const journalId = await postJournal(c, {
-        txnDate: data.invoiceDate,
-        sourceType: 'invoice',
-        sourceId: id,
-        narration: `Tax invoice ${number}`,
-        lines: invoiceJournalLines(totals, party.client_id, data.projectId),
-      });
-      await c.query(
-        `INSERT INTO invoice (id, company_id, number, fy, project_id, client_id, client_name, client_gstin, client_address,
-                              place_of_supply, is_inter_state, invoice_date, due_date, subtotal, discount, taxable, cgst,
-                              sgst, igst, round_off, total, notes, journal_id, created_by)
-         VALUES ($1, app_company_id(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                 $20, $21, $22, app_user_id())`,
-        [
-          id,
-          number,
-          financialYear(data.invoiceDate, company.fy_start_month),
-          data.projectId,
-          party.client_id,
-          party.name,
-          party.gstin,
-          party.address,
-          party.state_code,
-          totals.interState,
-          data.invoiceDate,
-          dueDate,
-          ...money(totals),
-          data.notes ?? null,
-          journalId,
-        ],
-      );
-      await insertLines(c, id, data.lines, totals);
-      await writeAudit(c, {
-        action: 'create',
-        entity: 'invoice',
-        entityId: id,
-        after: { number, ...data, dueDate, total: totals.total },
-      });
-      return { id, number };
-    });
+    const { id, number } = await withTenant(this.pool, ctx(actor), (c) => issueInvoiceTx(c, data));
+    return { id, number };
   }
 
   /**
