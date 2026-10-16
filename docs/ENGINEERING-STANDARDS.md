@@ -13,9 +13,10 @@ When this file and `SPEC-FIXES-v1.4.md` disagree, **this file wins**. Section 0 
 | # | Earlier decision | Handbook rule | New decision | Status |
 |---|---|---|---|---|
 | H1 | Email + password only, no MFA (client asked for "no SMS/OTP") | §1.2: MFA for privileged accounts | **Passkeys (WebAuthn)** are mandatory for Owner and Admin, and optional for everyone else. No SMS and no typed codes, so the client's "no OTP" wish still holds. Each privileged user registers 2 passkeys (phone + laptop). Recovery codes are printed once and kept in the office safe. | **CONFIRM with owner** |
-| H2 | C1: payroll, wage, contractor and vendor payments post without approval | §7.4: supplier payments and salary changes need authorisation limits | **Threshold approvals.** Vendor payments and contractor payments ≥ ₹25,000, any change to an employee's salary or daily rate, and quotation discounts > 10% all need Owner approval. Daily wages below the threshold post directly and appear in the daily "Posted without approval" digest. Thresholds are set in Settings, and every change to them is audited. | **CONFIRM amounts** |
+| H2 | C1: payroll, wage, contractor and vendor payments post without approval | §7.4: supplier payments and salary changes need authorisation limits | **No threshold: everything is approved.** Every vendor payment, contractor payment, daily-wage payment, payroll run, salary/daily-rate change and quotation discount entered by a non-owner is saved as *Pending* and posts nothing until the Owner approves it. Owner entries post directly. Approvals screen gets tabs: Expenses · Payments · Payroll · Rate changes · Discounts. | FIXED (owner decision 16 Oct 2026) |
 | H3 | No auditor role | §7.2: Auditor = read-only | New role **`auditor`** (the company's CA). View on every finance module, including `pnl` and the audit log. No edit rights anywhere. Access has an expiry date. | FIXED |
 | H4 | Audit log covers writes | §7.3: sensitive exports | Every CSV/XLSX/PDF export, GSTR-1 JSON download, payslip view and bill-photo view also writes an audit row. | FIXED |
+| H6 | Human reviewer + human ops owner | §13: named owners; §13.2: human review of AI code | **Claude Code is Technical Lead, reviewer and IT/Ops owner** (owner decision). Safeguards: (a) every PR gets an independent review pass in a separate Claude session (`/code-review high`) that did not write the code; (b) a **human Release Approver** clicks *Approve* on the production GitHub Environment, a 2-minute business check, not a code review; (c) alerts go to the human's email and phone, because Claude only acts while a session is running; (d) recorded as a formally accepted risk (§9.4) and reviewed every 6 months. | FIXED, accepted risk |
 | H5 | Dev environment only | §1.1, §8: dev / staging / production | Three environments, each with its own database, bucket and secrets. Production data is never copied down; staging uses synthetic seed data. | FIXED |
 
 ---
@@ -136,12 +137,13 @@ The incident process (severity S1–S4, owner, contain → restore → RCA withi
 |---|---|---|
 | Product owner | Saravanan S (Owner) | priorities, UAT sign-off, risk acceptance |
 | Business process owner | Saravanan S | approval thresholds, rights, lock date |
-| Technical lead / reviewer | **TBD (human)** | approves every PR and production deploy |
-| Developer | Claude Code + TBD | implementation, tests, docs |
-| QA / tester | Accounts Admin (UAT) + automated suites | test plans, regressions |
-| IT / operations owner | **TBD** | hosting, backups, restore drills, incidents |
+| Technical lead / reviewer | Claude Code (independent review session per PR) | architecture, code review, release readiness |
+| Developer | Claude Code | implementation, tests, docs |
+| QA / tester | Claude Code (automated suites) + Accounts Admin (UAT) | test plans, regressions, UAT |
+| IT / operations owner | Claude Code (scheduled checks: backups, restore drills, trial balance) | hosting, backups, incidents |
+| **Release approver + alert recipient (human)** | **Zahid / Saravanan S** | clicks Approve on production deploys; receives S1/S2 alerts; holds cloud and GitHub admin credentials |
 
-**AI-assisted development (handbook §13.2):** Claude Code opens PRs; it does not merge them. A named human reviews every PR, and **auth, permissions, posting, numbering and GST code needs line-by-line review**. No secrets or real client data are given to AI tools. The repository and cloud accounts belong to Cityscape Decors.
+**AI-assisted development (handbook §13.2), accepted deviation H6:** Claude Code writes, reviews (in a separate session) and merges PRs once CI is green. Production deploys still need the human Release Approver's click. Changes to auth, permissions, posting, numbering and GST get a `/code-review max` pass plus a dedicated security test before merge. No secrets or real client data are given to AI tools. The repository and cloud accounts belong to Cityscape Decors.
 
 ## 9. Privacy and legal — India (handbook §11)
 

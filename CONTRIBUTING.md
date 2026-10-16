@@ -12,7 +12,7 @@ Conventional Commits: `feat(sales): convert proforma to tax invoice (FR-4.3.5)`,
 ## Pull requests
 - One concern per PR, ideally < 400 changed lines.
 - The title starts with the FR or BUG ID.
-- Fill in the PR template checklist. A human reviewer approves before merge; AI-authored PRs are never self-merged.
+- Fill in the PR template checklist. An independent review session (`/code-review high`, `max` for sensitive code) must pass before merge. Production deploys need the human Release Approver.
 - Code in `packages/core/src/{auth,admin,ledger,gst}` and any migration needs line-by-line review.
 
 ## Definition of Done
@@ -21,7 +21,7 @@ Conventional Commits: `feat(sales): convert proforma to tax invoice (FR-4.3.5)`,
 3. Permission and project-scope cases tested (403 / 404).
 4. Migration added if the schema changed (expand → contract, never destructive in the same release).
 5. OpenAPI, CHANGELOG and runbooks updated where relevant.
-6. Human review approved, CI green.
+6. Independent review passed, CI green.
 
 ## Never
 - Commit secrets, `.env` files or real client/staff data.
