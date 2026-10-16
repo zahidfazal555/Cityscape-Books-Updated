@@ -1,6 +1,7 @@
 import {
   DomainError,
   MODULES,
+  assertId,
   hasCustomRights,
   roleTemplate,
   validateRights,
@@ -11,7 +12,8 @@ import {
 import { withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import { z } from 'zod';
-import type { AuthService } from './auth.js';
+import { revokeUserSessions, type AuthService } from './auth.js';
+import type { MailMessage } from './mailer.js';
 
 /** Users & security is owner-only and cannot be granted (Tech Spec §5). */
 export function assertOwner(actor: Actor): void {
@@ -136,6 +138,7 @@ function accessChanged(before: StoredUser, access: Resolved): boolean {
   return (
     access.role !== before.role ||
     access.projectsAll !== before.projectsAll ||
+    (access.accessExpiresAt?.getTime() ?? null) !== (before.accessExpiresAt?.getTime() ?? null) ||
     !sameProjects ||
     MODULES.some((m) => access.rights[m] !== before.rights[m])
   );
@@ -205,7 +208,7 @@ export class UsersService {
     assertOwner(actor);
     const data = parse(createUserSchema, input);
     const access = resolveAccess(data);
-    return withTenant(this.pool, ctx(actor), async (c) => {
+    const result = await withTenant(this.pool, ctx(actor), async (c) => {
       await assertProjectsExist(c, access.projectIds);
       const { rows } = await c
         .query<{ id: string }>(
@@ -234,9 +237,10 @@ export class UsersService {
         entityId: id,
         after: { ...data, ...access },
       });
-      await this.auth.issueToken(c, id, 'invite');
-      return id;
+      return { id, mail: await this.auth.issueToken(c, id, 'invite') };
     });
+    this.auth.sendAfterCommit([result.mail]);
+    return result.id;
   }
 
   /**
@@ -245,7 +249,9 @@ export class UsersService {
    */
   async update(actor: Actor, userId: string, input: UpdateUserInput): Promise<void> {
     assertOwner(actor);
+    assertId(userId, 'User');
     const data = parse(updateUserSchema, input);
+    const mails: MailMessage[] = [];
     await withTenant(this.pool, ctx(actor), async (c) => {
       const before = await getUser(c, userId);
       if (before.role === 'owner')
@@ -272,21 +278,40 @@ export class UsersService {
             : e;
         });
       await writeAccess(c, userId, access);
-      if (accessChanged(before, access)) await revokeSessions(c, userId);
+      const emailChanged = data.email !== undefined && data.email !== before.email.toLowerCase();
+      if (emailChanged) mails.push(...(await this.onEmailChanged(c, userId)));
+      if (emailChanged || accessChanged(before, access)) await revokeUserSessions(c, userId);
       const after = await getUser(c, userId);
       await writeAudit(c, { action: 'update', entity: 'user', entityId: userId, before, after });
     });
+    this.auth.sendAfterCommit(mails);
+  }
+
+  /**
+   * Links already mailed to the old address must stop working. A user who has not accepted
+   * the invite yet gets a fresh one at the new address.
+   */
+  private async onEmailChanged(c: pg.PoolClient, userId: string): Promise<MailMessage[]> {
+    await c.query('UPDATE auth_token SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [
+      userId,
+    ]);
+    const { rows } = await c.query<{ pending: boolean }>(
+      'SELECT password_hash IS NULL AS pending FROM app_user WHERE id = $1',
+      [userId],
+    );
+    return rows[0]?.pending ? [await this.auth.issueToken(c, userId, 'invite')] : [];
   }
 
   /** Deactivated users cannot sign in; their records and audit entries stay (UAT 12). */
   async setActive(actor: Actor, userId: string, active: boolean): Promise<void> {
     assertOwner(actor);
+    assertId(userId, 'User');
     await withTenant(this.pool, ctx(actor), async (c) => {
       const before = await getUser(c, userId);
       if (before.role === 'owner')
         throw new DomainError('FORBIDDEN', 'The owner account cannot be deactivated.');
       await c.query('UPDATE app_user SET is_active = $2 WHERE id = $1', [userId, active]);
-      if (!active) await revokeSessions(c, userId);
+      if (!active) await revokeUserSessions(c, userId);
       await writeAudit(c, {
         action: active ? 'activate' : 'deactivate',
         entity: 'user',
@@ -299,12 +324,14 @@ export class UsersService {
 
   async resendInvite(actor: Actor, userId: string): Promise<void> {
     assertOwner(actor);
-    await withTenant(this.pool, ctx(actor), async (c) => {
+    assertId(userId, 'User');
+    const mail = await withTenant(this.pool, ctx(actor), async (c) => {
       const u = await getUser(c, userId);
       if (!u.isActive) throw new DomainError('VALIDATION', 'Activate the user first.');
-      await this.auth.issueToken(c, userId, 'invite');
       await writeAudit(c, { action: 'invite_sent', entity: 'user', entityId: userId });
+      return this.auth.issueToken(c, userId, 'invite');
     });
+    this.auth.sendAfterCommit([mail]);
   }
 }
 
@@ -386,10 +413,4 @@ async function assertProjectsExist(c: pg.PoolClient, ids: string[]): Promise<voi
   );
   if (rows[0]?.n !== ids.length)
     throw new DomainError('VALIDATION', 'One of the chosen projects does not exist.', 'projectIds');
-}
-
-async function revokeSessions(c: pg.PoolClient, userId: string): Promise<void> {
-  await c.query('UPDATE session SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [
-    userId,
-  ]);
 }

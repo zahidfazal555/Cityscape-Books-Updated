@@ -36,3 +36,13 @@ export function financialYear(value: IsoDate, startMonth = 4): string {
   const yy = (n: number): string => String(n % 100).padStart(2, '0');
   return startMonth === 1 ? yy(startYear) : `${yy(startYear)}-${yy(startYear + 1)}`;
 }
+
+/** Today's business date in the company's time zone (India by default), as YYYY-MM-DD. */
+export function todayIn(timeZone = 'Asia/Kolkata', now: Date = new Date()): IsoDate {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+}

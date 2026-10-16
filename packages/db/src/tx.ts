@@ -20,6 +20,8 @@ export function mapDbError(error: unknown): unknown {
       return new DomainError('CONFLICT', 'This record cannot be changed.');
     case '23505':
       return new DomainError('CONFLICT', 'A record with these details already exists.');
+    case '22P02':
+      return new DomainError('VALIDATION', 'A value has the wrong format.');
     case '42501':
       return new DomainError('FORBIDDEN', 'You do not have access to this.');
     default:

@@ -1,4 +1,4 @@
-import { DomainError, parseIsoDate, type Actor, type IsoDate } from '@csd/core';
+import { DomainError, parseIsoDate, todayIn, type Actor, type IsoDate } from '@csd/core';
 import { withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import { assertOwner } from './users.js';
@@ -48,7 +48,7 @@ export class SettingsService {
     assertOwner(actor);
     if (lockDate !== null) {
       parseIsoDate(lockDate, 'lockDate');
-      if (lockDate > new Date().toISOString().slice(0, 10)) {
+      if (lockDate > todayIn('Asia/Kolkata')) {
         throw new DomainError('VALIDATION', 'The lock date cannot be in the future.', 'lockDate');
       }
     }

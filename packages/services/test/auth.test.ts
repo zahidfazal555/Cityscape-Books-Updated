@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SignJWT } from 'jose';
+import { BAD_LOGIN } from '../src/index.js';
 import {
   OWNER_PASSWORD,
   client,
@@ -41,13 +42,13 @@ describe('sign-in', () => {
   it('gives the same message for a wrong password and an unknown email', async () => {
     await expect(s.auth.login(ownerEmail, 'wrong-password-xyz', client)).rejects.toMatchObject({
       status: 401,
-      message: 'Email or password is incorrect.',
+      message: BAD_LOGIN,
     });
     await expect(
       s.auth.login('nobody@nowhere.test', 'whatever-password', client),
     ).rejects.toMatchObject({
       status: 401,
-      message: 'Email or password is incorrect.',
+      message: BAD_LOGIN,
     });
   });
 
@@ -77,7 +78,7 @@ describe('sign-in', () => {
     }
     await expect(
       s.auth.login('admin.lock@example.test', 'Correct-Horse-Battery-9', client),
-    ).rejects.toThrow('Too many failed sign-ins. Try again in 15 minutes.');
+    ).rejects.toThrow(BAD_LOGIN);
     const { rows } = await superPool.query(
       `SELECT type, title FROM notification WHERE user_id = $1 AND type = 'security'`,
       [f.ownerId],
@@ -100,6 +101,11 @@ describe('sessions', () => {
     const second = await s.auth.refresh(first.refreshToken, client);
     expect(second.refreshToken).not.toBe(first.refreshToken);
     await expect(s.auth.authenticate(second.accessToken)).resolves.toBeDefined();
+    // Older than the 60-second race window: a replay, not two tabs.
+    await superPool.query(
+      `UPDATE session_rotated SET rotated_at = now() - interval '2 minutes' WHERE user_id = $1`,
+      [f.ownerId],
+    );
     await expect(s.auth.refresh(first.refreshToken, client)).rejects.toMatchObject({ status: 401 });
     await expect(s.auth.refresh(second.refreshToken, client)).rejects.toMatchObject({
       status: 401,
@@ -179,13 +185,13 @@ describe('invites, resets and password policy', () => {
   it('enforces length, personal-detail, repetition and breach rules', async () => {
     const t = await login();
     const { actor } = await s.auth.authenticate(t.accessToken);
-    const change = (p: string) => s.auth.changePassword(actor, OWNER_PASSWORD, p);
+    const change = (p: string) => s.auth.changePassword(actor, OWNER_PASSWORD, p, client);
     await expect(change('short-1')).rejects.toThrow('at least 12');
     await expect(change('Welcome@12345')).rejects.toThrow('data breach');
     await expect(change('aaaaaaaaaaaaaaaa')).rejects.toThrow('less repetitive');
     await expect(change(`${ownerEmail.split('@')[0]}-secret-99`)).rejects.toThrow('name or email');
     await expect(
-      s.auth.changePassword(actor, 'wrong-current-pw', 'Fine-new-pass-99'),
+      s.auth.changePassword(actor, 'wrong-current-pw', 'Fine-new-pass-99', client),
     ).rejects.toThrow('Current password is incorrect.');
   });
 });
@@ -205,7 +211,7 @@ describe('access lifecycle (UAT 12)', () => {
     await expect(s.auth.authenticate(t.accessToken)).rejects.toMatchObject({ status: 401 });
     await expect(
       s.auth.login('leaver@example.test', 'Leaving-soon-pass-1', client),
-    ).rejects.toThrow('Email or password is incorrect.');
+    ).rejects.toThrow(BAD_LOGIN);
     await s.users.setActive(owner, id, true);
     await expect(
       s.auth.login('leaver@example.test', 'Leaving-soon-pass-1', client),

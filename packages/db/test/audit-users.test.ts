@@ -103,18 +103,21 @@ describe('users, rights and sign-in helpers', () => {
     expect((await appPool.query('SELECT * FROM app_user')).rows).toHaveLength(0);
   });
 
-  it('five failed sign-ins lock the account for 15 minutes', async () => {
-    let lockedUntil: Date | null = null;
-    for (let i = 0; i < 5; i++) {
-      const { rows } = await appPool.query<{ t: Date | null }>(
-        'SELECT auth_record_failure($1) AS t',
+  it('five failed sign-ins lock the account for 15 minutes, reported once by the database', async () => {
+    const results: boolean[] = [];
+    for (let i = 0; i < 6; i++) {
+      const { rows } = await appPool.query<{ locked: boolean }>(
+        'SELECT auth_record_failure($1) AS locked',
         [f.ownerId],
       );
-      lockedUntil = rows[0]!.t;
-      if (i < 4) expect(lockedUntil).toBeNull();
+      results.push(rows[0]!.locked);
     }
-    const minutes = ((lockedUntil?.getTime() ?? 0) - Date.now()) / 60_000;
-    expect(minutes).toBeGreaterThan(14);
-    expect(minutes).toBeLessThanOrEqual(15);
+    expect(results).toEqual([false, false, false, false, true, false]);
+    const { rows } = await superPool.query<{ m: number }>(
+      `SELECT extract(epoch FROM locked_until - now()) / 60 AS m FROM app_user WHERE id = $1`,
+      [f.ownerId],
+    );
+    expect(Number(rows[0]!.m)).toBeGreaterThan(14);
+    expect(Number(rows[0]!.m)).toBeLessThanOrEqual(15);
   });
 });
