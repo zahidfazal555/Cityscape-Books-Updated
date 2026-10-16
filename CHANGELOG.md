@@ -11,6 +11,8 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
   live GST totals, CSV export of invoices and customer advances on the project page.
 - Purchases: purchase orders, purchase bills with input-credit rules, and vendor payments with
   TDS; every non-owner payment waits for the Owner's approval.
+- Expenses with required bill photos (type-sniffed, EXIF/GPS stripped, audited views), the Owner's
+  approval queue (expenses, payments, discounts) and audited expense CSV export.
 
 ### Changed
 - H2 approvals are keyed to the Owner role: granting `approvals = full` to another user no longer

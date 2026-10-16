@@ -62,3 +62,9 @@ Restore the latest nightly dump into staging, then run `pnpm verify:books` (tria
 ### Incidents
 | Date | Severity | Summary | Root cause | Fix / test | By |
 |---|---|---|---|---|---|
+
+## Bill photos (attachments)
+- Stored outside the database under `ATTACHMENT_DIR` (required in production; the app refuses to start without it). Keys are `<company id>/<attachment id>`, created once and never overwritten; the `attachment` table holds type, size and SHA-256.
+- Back the directory up with the database, on the same schedule; a restore needs both. Verify a sample after restore by comparing SHA-256 with `attachment.sha256`.
+- Uploads are type-sniffed (JPEG, PNG, PDF only, ≤ 10 MB) and stripped of EXIF/GPS and text metadata before storage. Every view writes an audit row (H4).
+- Moving to an S3-compatible bucket: implement `BlobStore` (`put`/`get`) for the bucket, copy the directory tree key-for-key, then switch the container in `apps/web/src/lib/server.ts`.

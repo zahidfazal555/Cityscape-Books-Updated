@@ -130,8 +130,13 @@ describe('configuration guards', () => {
         MAIL_MODE: 'outbox',
         CSD_ALLOW_OUTBOX_IN_PRODUCTION: 'e2e',
         CSD_LOGIN_LIMIT_PER_MINUTE: '10',
+        ATTACHMENT_DIR: '/var/lib/csd/attachments',
       }),
     ).resolves.toMatchObject({ CSD_LOGIN_LIMIT_PER_MINUTE: 10 });
+    // Bill photos need a private directory in production.
+    await expect(
+      load({ NODE_ENV: 'production', MAIL_MODE: 'outbox', CSD_ALLOW_OUTBOX_IN_PRODUCTION: 'e2e' }),
+    ).rejects.toThrow('ATTACHMENT_DIR');
     await expect(
       load({ NODE_ENV: 'development', CSD_LOGIN_LIMIT_PER_MINUTE: '-1' }),
     ).rejects.toThrow('CSD_LOGIN_LIMIT_PER_MINUTE');

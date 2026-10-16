@@ -55,10 +55,7 @@ export function api<P = Record<string, never>>(
 ): RouteHandler<P> {
   return tag('authenticated', (req, route) =>
     run(req, route, async (ctx) => {
-      const token = req.cookies.get(COOKIE.access)?.value ?? bearer(req);
-      if (!token) throw new DomainError('UNAUTHENTICATED', 'Please sign in.');
-      const { actor } = await services().auth.authenticate(token);
-      limits.api.take(actor.userId);
+      const actor = await authenticated(req);
       const authed = { ...ctx, actor };
       return req.method === 'POST' ? idempotent(req, authed, fn) : fn(authed);
     }),
@@ -102,6 +99,42 @@ async function idempotent<P>(
   }
 }
 
+/** Largest file upload (bill photos, Tech Spec §6): 10 MB plus a little multipart-free slack. */
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024 + 1;
+
+/**
+ * An authenticated file upload: the raw request body (not JSON) up to MAX_UPLOAD_BYTES, with the
+ * same session, origin and rate checks as api(). The service sniffs and cleans the bytes.
+ */
+export function apiUpload(
+  fn: (ctx: AuthedContext<Record<string, never>> & { file: Buffer }) => Promise<unknown>,
+): RouteHandler<Record<string, never>> {
+  return tag('authenticated', (req, route) =>
+    run(
+      req,
+      route,
+      async (ctx) => {
+        const actor = await authenticated(req);
+        const declared = Number(req.headers.get('content-length') ?? '0');
+        if (declared > MAX_UPLOAD_BYTES)
+          throw new DomainError('TOO_LARGE', 'The file is larger than 10 MB.');
+        const file = await readCapped(req.body, MAX_UPLOAD_BYTES);
+        return fn({ ...ctx, actor, file });
+      },
+      'raw',
+    ),
+  );
+}
+
+/** The session's actor (verified on the server), rate-limited per user. */
+async function authenticated(req: NextRequest): Promise<Actor> {
+  const token = req.cookies.get(COOKIE.access)?.value ?? bearer(req);
+  if (!token) throw new DomainError('UNAUTHENTICATED', 'Please sign in.');
+  const { actor } = await services().auth.authenticate(token);
+  limits.api.take(actor.userId);
+  return actor;
+}
+
 /** Health probes: no session, no body, no data beyond up/down. */
 export function probe(fn: () => Promise<Response>): RouteHandler<Record<string, never>> {
   return tag('probe', () => fn());
@@ -111,11 +144,12 @@ async function run<P>(
   req: NextRequest,
   route: { params: Promise<P> },
   fn: (ctx: RequestContext<P>) => Promise<unknown>,
+  bodyKind: 'json' | 'raw' = 'json',
 ): Promise<Response> {
   const requestId = randomUUID();
   try {
     if (MUTATING.has(req.method)) assertSameOrigin(req);
-    const body = MUTATING.has(req.method) ? await readJson(req) : undefined;
+    const body = MUTATING.has(req.method) && bodyKind === 'json' ? await readJson(req) : undefined;
     const result = await fn({ req, params: await route.params, client: clientInfo(req), body });
     const res =
       result instanceof Response
@@ -177,7 +211,10 @@ export async function readJson(req: Request): Promise<unknown> {
 }
 
 /** Reads a body stream, stopping (and cancelling it) as soon as it passes MAX_BODY_BYTES. */
-async function readCapped(body: ReadableStream<Uint8Array> | null): Promise<Buffer> {
+async function readCapped(
+  body: ReadableStream<Uint8Array> | null,
+  max = MAX_BODY_BYTES,
+): Promise<Buffer> {
   if (!body) return Buffer.alloc(0);
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
@@ -186,7 +223,7 @@ async function readCapped(body: ReadableStream<Uint8Array> | null): Promise<Buff
     const { done, value } = await reader.read();
     if (done) return Buffer.concat(chunks);
     size += value.byteLength;
-    if (size > MAX_BODY_BYTES) {
+    if (size > max) {
       await reader.cancel().catch(() => undefined);
       throw new DomainError('TOO_LARGE', 'Request is too large.');
     }

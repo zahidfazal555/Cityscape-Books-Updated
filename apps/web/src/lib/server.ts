@@ -1,9 +1,15 @@
 import 'server-only';
+import os from 'node:os';
+import path from 'node:path';
 import pg from 'pg';
 import {
+  ApprovalsService,
+  AttachmentsService,
   AuditService,
   AuthService,
   ContactsService,
+  ExpensesService,
+  FileBlobStore,
   HibpBreachChecker,
   IdempotencyService,
   InvoicesService,
@@ -38,6 +44,9 @@ export interface Services {
   proformas: ProformasService;
   idempotency: IdempotencyService;
   receipts: ReceiptsService;
+  attachments: AttachmentsService;
+  expenses: ExpensesService;
+  approvals: ApprovalsService;
 }
 
 const g = globalThis as unknown as { __csd?: Services };
@@ -78,6 +87,13 @@ export function services(): Services {
     vendorPayments: new VendorPaymentsService(pool),
     proformas: new ProformasService(pool),
     idempotency: new IdempotencyService(pool),
+    // Dev and test fall back to a temp directory; production must set ATTACHMENT_DIR (env.ts).
+    attachments: new AttachmentsService(
+      pool,
+      new FileBlobStore(e.ATTACHMENT_DIR ?? path.join(os.tmpdir(), 'csd-attachments')),
+    ),
+    expenses: new ExpensesService(pool),
+    approvals: new ApprovalsService(pool),
     receipts: new ReceiptsService(pool),
   };
   return g.__csd;

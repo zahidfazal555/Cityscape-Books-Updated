@@ -23,6 +23,8 @@ const schema = z.object({
   CSD_ALLOW_OUTBOX_IN_PRODUCTION: z.literal('e2e').optional(),
   /** Sign-ins per IP per minute. At most 10 in production (ENGINEERING-STANDARDS §2), except the e2e run. */
   CSD_LOGIN_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(1000).default(10),
+  /** Private directory for bill photos (FileBlobStore). Outside the web root; required in production. */
+  ATTACHMENT_DIR: z.string().min(1).optional(),
 });
 
 export type Env = z.infer<typeof schema>;
@@ -36,19 +38,23 @@ export function env(): Env {
     const fields = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
     throw new Error(`Invalid configuration — ${fields}`);
   }
-  const e2e = parsed.data.CSD_ALLOW_OUTBOX_IN_PRODUCTION === 'e2e';
-  if (parsed.data.NODE_ENV === 'production' && parsed.data.MAIL_MODE === 'outbox' && !e2e) {
+  assertProduction(parsed.data);
+  cached = parsed.data;
+  return cached;
+}
+
+/** Settings that are only safe outside production are refused there (fail fast at start-up). */
+function assertProduction(e: Env): void {
+  const e2e = e.CSD_ALLOW_OUTBOX_IN_PRODUCTION === 'e2e';
+  if (e.NODE_ENV === 'production' && e.MAIL_MODE === 'outbox' && !e2e) {
     throw new Error('Invalid configuration — production needs a real mail provider (MAIL_MODE).');
   }
-  if (
-    parsed.data.NODE_ENV === 'production' &&
-    parsed.data.CSD_LOGIN_LIMIT_PER_MINUTE > 10 &&
-    !e2e
-  ) {
+  if (e.NODE_ENV === 'production' && e.CSD_LOGIN_LIMIT_PER_MINUTE > 10 && !e2e) {
     throw new Error(
       'Invalid configuration — CSD_LOGIN_LIMIT_PER_MINUTE cannot exceed 10 in production.',
     );
   }
-  cached = parsed.data;
-  return cached;
+  if (e.NODE_ENV === 'production' && !e.ATTACHMENT_DIR) {
+    throw new Error('Invalid configuration — ATTACHMENT_DIR is required in production.');
+  }
 }
