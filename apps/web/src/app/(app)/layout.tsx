@@ -14,7 +14,10 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-20 flex h-14 items-center gap-4 border-b border-line bg-white px-5">
+      <header
+        data-noprint
+        className="sticky top-0 z-20 flex h-14 items-center gap-4 border-b border-line bg-white px-5"
+      >
         <Image
           src="/brand/cityscape-logo.png"
           alt="Cityscape Decors"

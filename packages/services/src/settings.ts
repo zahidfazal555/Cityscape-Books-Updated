@@ -1,4 +1,4 @@
-import { DomainError, parseIsoDate, todayIn, type Actor, type IsoDate } from '@csd/core';
+import { DomainError, can, parseIsoDate, todayIn, type Actor, type IsoDate } from '@csd/core';
 import { withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import { assertOwner } from './users.js';
@@ -12,6 +12,22 @@ export interface CompanySettings {
   requireBillAttachment: boolean;
 }
 
+export interface Letterhead {
+  name: string;
+  legalName: string | null;
+  gstin: string | null;
+  stateCode: string;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  bankName: string | null;
+  bankAccount: string | null;
+  bankIfsc: string | null;
+  bankBranch: string | null;
+}
+
+const SALES_DOCS = ['quotes', 'proformas', 'invoices', 'receipts'] as const;
+
 export class SettingsService {
   constructor(private readonly pool: pg.Pool) {}
 
@@ -22,6 +38,30 @@ export class SettingsService {
     if (!actor.active) throw new DomainError('UNAUTHENTICATED', 'Please sign in again.');
     const { name, lockDate, fyStartMonth } = await this.read(actor);
     return { name, lockDate, fyStartMonth };
+  }
+
+  /**
+   * What is printed on quotations, proformas, invoices and receipts. Anyone who can view one of
+   * those documents can read it (bank details are printed for the client to pay into).
+   */
+  async letterhead(actor: Actor): Promise<Letterhead> {
+    if (!SALES_DOCS.some((m) => can(actor, m, 'view')))
+      throw new DomainError('FORBIDDEN', 'You do not have access to sales documents.');
+    return withTenant(
+      this.pool,
+      { companyId: actor.companyId, userId: actor.userId },
+      async (c) => {
+        const { rows } = await c.query<Letterhead>(
+          `SELECT name, legal_name AS "legalName", gstin, state_code AS "stateCode", address, phone, email::text,
+                  bank_name AS "bankName", bank_acc AS "bankAccount", bank_ifsc AS "bankIfsc",
+                  bank_branch AS "bankBranch"
+             FROM company`,
+        );
+        const r = rows[0];
+        if (!r) throw new DomainError('NOT_FOUND', 'Company not found.');
+        return r;
+      },
+    );
   }
 
   /** Full company settings: Users & security is owner-only. */

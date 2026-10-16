@@ -27,10 +27,10 @@ const GROUPS: NavGroup[] = [
   {
     label: 'Sales',
     items: [
-      { label: 'Quotations', href: '/quotes', module: 'quotes', ready: false },
-      { label: 'Proforma invoices', href: '/proformas', module: 'proformas', ready: false },
-      { label: 'Tax invoices', href: '/invoices', module: 'invoices', ready: false },
-      { label: 'Client receipts', href: '/receipts', module: 'receipts', ready: false },
+      { label: 'Quotations', href: '/quotes', module: 'quotes', ready: true },
+      { label: 'Proforma invoices', href: '/proformas', module: 'proformas', ready: true },
+      { label: 'Tax invoices', href: '/invoices', module: 'invoices', ready: true },
+      { label: 'Client receipts', href: '/receipts', module: 'receipts', ready: true },
     ],
   },
   {
