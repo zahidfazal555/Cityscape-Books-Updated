@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type pg from 'pg';
 import {
-  migrate,
   postJournal,
   redact,
   reverseJournal,
@@ -18,6 +17,7 @@ import {
   type Fixture,
 } from './helpers.js';
 import { inject } from 'vitest';
+import { migrate } from '../src/migrate.js';
 
 let f: Fixture;
 const ctx = (): { companyId: string; userId: string } => ({

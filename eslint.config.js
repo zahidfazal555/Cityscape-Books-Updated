@@ -38,7 +38,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['**/test/**/*.ts'],
+    files: ['**/test/**/*.ts', '**/e2e/**/*.ts'],
     rules: { 'max-lines-per-function': 'off', '@typescript-eslint/no-non-null-assertion': 'off' },
   },
 );

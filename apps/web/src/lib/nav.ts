@@ -1,0 +1,81 @@
+import { can, type Actor, type Module } from '@csd/core';
+
+export interface NavItem {
+  label: string;
+  href: string;
+  /** Rights module that must be at least `view`; `owner` = Users & security (not grantable). */
+  module: Module | 'owner';
+  /** Built in this release; others show as "Soon". */
+  ready: boolean;
+}
+
+export interface NavGroup {
+  label: string | null;
+  items: NavItem[];
+}
+
+/** Left navigation (Req FR-3.4.1). Items the user has no right to are not listed at all. */
+const GROUPS: NavGroup[] = [
+  {
+    label: null,
+    items: [
+      { label: 'Dashboard', href: '/', module: 'dashboard', ready: true },
+      { label: 'Projects', href: '/projects', module: 'projects', ready: false },
+      { label: 'Clients & vendors', href: '/contacts', module: 'contacts', ready: false },
+    ],
+  },
+  {
+    label: 'Sales',
+    items: [
+      { label: 'Quotations', href: '/quotes', module: 'quotes', ready: false },
+      { label: 'Proforma invoices', href: '/proformas', module: 'proformas', ready: false },
+      { label: 'Tax invoices', href: '/invoices', module: 'invoices', ready: false },
+      { label: 'Client receipts', href: '/receipts', module: 'receipts', ready: false },
+    ],
+  },
+  {
+    label: 'Purchases',
+    items: [
+      { label: 'Purchase orders', href: '/purchase-orders', module: 'pos', ready: false },
+      { label: 'Purchase bills', href: '/bills', module: 'bills', ready: false },
+      { label: 'Expenses', href: '/expenses', module: 'expenses', ready: false },
+      { label: 'Approvals', href: '/approvals', module: 'approvals', ready: false },
+    ],
+  },
+  {
+    label: 'Accounts',
+    items: [
+      { label: 'Cash, bank & UPI', href: '/banking', module: 'banking', ready: false },
+      { label: 'Outstanding', href: '/outstanding', module: 'outstanding', ready: false },
+      { label: 'GST returns', href: '/gst', module: 'gst', ready: false },
+      { label: 'Reports', href: '/reports', module: 'reports', ready: false },
+    ],
+  },
+  {
+    label: 'Support',
+    items: [
+      { label: 'Tickets', href: '/tickets', module: 'tickets', ready: false },
+      { label: 'Warranty register', href: '/warranty', module: 'warranty', ready: false },
+      { label: 'Knowledge base', href: '/kb', module: 'kb', ready: false },
+    ],
+  },
+  {
+    label: 'Operations',
+    items: [
+      { label: 'Payroll', href: '/payroll', module: 'payroll', ready: false },
+      { label: 'Inventory', href: '/inventory', module: 'inventory', ready: false },
+    ],
+  },
+  {
+    label: 'Admin',
+    items: [{ label: 'Users & security', href: '/settings/users', module: 'owner', ready: false }],
+  },
+];
+
+export function navFor(actor: Actor): NavGroup[] {
+  const visible = (i: NavItem): boolean =>
+    i.module === 'owner' ? actor.role === 'owner' : can(actor, i.module, 'view');
+  return GROUPS.map((g) => ({ ...g, items: g.items.filter(visible) })).filter(
+    (g) => g.items.length > 0,
+  );
+}

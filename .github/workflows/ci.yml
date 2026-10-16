@@ -48,6 +48,21 @@ jobs:
         run: pnpm test:db
       - name: Service tests (auth, users, settings)
         run: pnpm test:services
+      - name: Web unit tests (route guard, navigation)
+        run: pnpm --filter @csd/web test
+      - name: Web production build
+        run: pnpm --filter @csd/web build
+      - name: Install Chromium for e2e
+        run: pnpm --filter @csd/web exec playwright install --with-deps chromium
+      - name: End-to-end tests (Playwright, real build + Postgres)
+        run: pnpm --filter @csd/web e2e
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: apps/web/test-results
+          retention-days: 7
       - name: Dependency audit (fail on high/critical)
         run: pnpm audit --audit-level high --prod
       - name: Secret scan (full history, pinned gitleaks CLI)
