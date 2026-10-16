@@ -8,7 +8,7 @@ export function Field({
 }: {
   label: string;
   htmlFor: string;
-  hint?: string;
+  hint?: string | undefined;
   children: ReactNode;
 }) {
   return (

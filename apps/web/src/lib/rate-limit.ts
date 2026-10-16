@@ -37,9 +37,12 @@ export class RateLimiter {
   }
 }
 
+/** Sign-in attempts per IP per minute. 10 in production; the e2e suite (one shared IP) raises it. */
+const LOGIN_PER_MINUTE = Number(process.env['CSD_LOGIN_LIMIT_PER_MINUTE'] ?? '10') || 10;
+
 export const limits = {
   /** Sign-in attempts per client IP. */
-  login: new RateLimiter(10, 60_000),
+  login: new RateLimiter(LOGIN_PER_MINUTE, 60_000),
   /** Password-reset and invite redemptions per client IP. */
   tokenRedeem: new RateLimiter(10, 60_000),
   /** Reset emails per address and per IP: stops mail floods and link churn. */

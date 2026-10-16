@@ -41,6 +41,8 @@ export default defineConfig({
       TRUSTED_PROXIES: '0',
       MAIL_MODE: 'outbox',
       CSD_ALLOW_OUTBOX_IN_PRODUCTION: 'e2e',
+      // Every test signs in from the same address; the limiter itself is unit-tested.
+      CSD_LOGIN_LIMIT_PER_MINUTE: '1000',
     },
   },
 });

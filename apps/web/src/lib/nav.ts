@@ -3,8 +3,8 @@ import { can, type Actor, type Module } from '@csd/core';
 export interface NavItem {
   label: string;
   href: string;
-  /** Rights module that must be at least `view`; `owner` = Users & security (not grantable). */
-  module: Module | 'owner';
+  /** Rights module that must be at least `view`; `owner` = Users & security (not grantable); `auditTrail` = owner or auditor. */
+  module: Module | 'owner' | 'auditTrail';
   /** Built in this release; others show as "Soon". */
   ready: boolean;
 }
@@ -20,8 +20,8 @@ const GROUPS: NavGroup[] = [
     label: null,
     items: [
       { label: 'Dashboard', href: '/', module: 'dashboard', ready: true },
-      { label: 'Projects', href: '/projects', module: 'projects', ready: false },
-      { label: 'Clients & vendors', href: '/contacts', module: 'contacts', ready: false },
+      { label: 'Projects', href: '/projects', module: 'projects', ready: true },
+      { label: 'Clients & vendors', href: '/contacts', module: 'contacts', ready: true },
     ],
   },
   {
@@ -68,13 +68,20 @@ const GROUPS: NavGroup[] = [
   },
   {
     label: 'Admin',
-    items: [{ label: 'Users & security', href: '/settings/users', module: 'owner', ready: false }],
+    items: [
+      { label: 'Users & security', href: '/settings/users', module: 'owner', ready: true },
+      { label: 'Audit trail', href: '/settings/audit', module: 'auditTrail', ready: true },
+    ],
   },
 ];
 
 export function navFor(actor: Actor): NavGroup[] {
-  const visible = (i: NavItem): boolean =>
-    i.module === 'owner' ? actor.role === 'owner' : can(actor, i.module, 'view');
+  const visible = (i: NavItem): boolean => {
+    if (i.module === 'owner') return actor.role === 'owner';
+    // The owner reaches the audit trail from Users & security; the auditor gets its own entry.
+    if (i.module === 'auditTrail') return actor.role === 'auditor';
+    return can(actor, i.module, 'view');
+  };
   return GROUPS.map((g) => ({ ...g, items: g.items.filter(visible) })).filter(
     (g) => g.items.length > 0,
   );
