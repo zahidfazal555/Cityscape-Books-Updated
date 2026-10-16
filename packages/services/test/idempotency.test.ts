@@ -45,7 +45,9 @@ describe('idempotency keys', () => {
     await idem.finish(owner, key('c'), 500, null);
     expect(await idem.begin(owner, key('c'), 'POST', '/x', {})).toEqual({ kind: 'fresh' });
     await idem.finish(owner, key('c'), 422, { error: { code: 'VALIDATION' } });
-    expect(await idem.begin(owner, key('c'), 'POST', '/x', { corrected: true })).toEqual({ kind: 'fresh' });
+    expect(await idem.begin(owner, key('c'), 'POST', '/x', { corrected: true })).toEqual({
+      kind: 'fresh',
+    });
     await idem.finish(owner, key('c'), 204, undefined);
     await superPool.query(
       `UPDATE idempotency_key SET created_at = now() - interval '25 hours' WHERE key = $1`,
