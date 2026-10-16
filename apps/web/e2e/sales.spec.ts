@@ -2,9 +2,9 @@ import { expect, test, type Page } from '@playwright/test';
 import { withDb } from './db';
 import { PASSWORD, email } from './fixtures';
 
-async function signIn(page: Page) {
+async function signIn(page: Page, role: 'owner' | 'manager' = 'owner') {
   await page.goto('/login');
-  await page.getByLabel('Work email').fill(email('owner'));
+  await page.getByLabel('Work email').fill(email(role));
   await page.getByLabel('Password').fill(PASSWORD);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Good');
@@ -72,9 +72,51 @@ test('UAT 1: quote → revise → accept → 30% proforma → advance → tax in
   await rc.getByLabel('UPI reference').fill('UPI-E2E-2');
   await rc.getByRole('button', { name: 'Save receipt' }).click();
   await expect(page.getByText('Paid', { exact: true })).toBeVisible();
+  // With receipts of its own the invoice can be neither edited nor cancelled: no buttons.
+  await expect(page.getByRole('button', { name: 'Cancel invoice' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+
+  // The CSV export comes from the server and is audited (H4).
+  const csv = await page.request.get('/api/v1/invoices/export');
+  expect(csv.status()).toBe(200);
+  expect(csv.headers()['content-type']).toContain('text/csv');
+  expect(await csv.text()).toContain('Anand Textiles');
+  const exports = await withDb(
+    async (c) =>
+      (await c.query(`SELECT 1 FROM audit_log WHERE action = 'export' AND entity = 'invoice'`))
+        .rowCount,
+  );
+  expect(exports).toBeGreaterThan(0);
 
   // The receipts register shows the advance against the proforma and the final payment.
   await page.getByRole('link', { name: 'Client receipts' }).click();
   await expect(page.getByRole('row').filter({ hasText: 'advance · PI/' })).toHaveCount(1);
   await expect(page.getByRole('row').filter({ hasText: 'UPI-E2E-2' })).toHaveCount(1);
+});
+
+test('H2 on screen: a manager’s discounted draft cannot be sent and prints as an unapproved draft', async ({
+  page,
+}) => {
+  await withDb((c) =>
+    c.query(
+      `INSERT INTO contact (company_id, type, name, state_code)
+       SELECT id, 'client', 'Velan Exports', '29' FROM company`,
+    ),
+  );
+  await signIn(page, 'manager');
+  await page.getByRole('link', { name: 'Quotations' }).click();
+  await page.getByRole('button', { name: '+ New quotation' }).click();
+  const qd = page.getByRole('dialog', { name: 'New quotation' });
+  await qd.getByLabel('Client').selectOption({ label: 'Velan Exports' });
+  await qd.getByLabel('Proposal title').fill('Office partitions');
+  await qd.getByLabel('Discount % (0–50)').fill('10');
+  await qd.getByLabel('Line 1 description').fill('Partitions');
+  await qd.getByLabel('Line 1 rate').fill('100000');
+  // Karnataka client: IGST. ₹1,00,000 less 10% = ₹90,000 + 18% = ₹1,06,200.
+  await expect(qd.getByTestId('doc-total')).toHaveText('₹1,06,200');
+  await qd.getByRole('button', { name: 'Save draft' }).click();
+  await expect(page.getByRole('article')).toContainText('DRAFT · discount not approved');
+  await expect(page.getByRole('article')).toContainText('IGST');
+  await expect(page.getByRole('button', { name: 'Mark as sent' })).toHaveCount(0);
+  await expect(page.getByText('waiting for the owner')).toBeVisible();
 });

@@ -2,31 +2,29 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { todayIn, type InvoiceStatus, type Paise } from '@csd/core';
+import { todayIn } from '@csd/core';
+import type { InvoiceDetail } from '@csd/services';
 import { Button, Field, FormError, Input } from '@/components/ui';
 import { Drawer } from '@/components/kit';
 import { ReceiptDrawer } from '@/components/sales/receipt-drawer';
 import { useAction } from '@/components/sales/use-action';
 import { apiFetch, newIdempotencyKey } from '@/lib/client';
+import { InvoiceDrawer } from '../invoice-drawer';
 
 export function InvoiceActions({
   invoice,
   canReceive,
   canCancel,
+  canEdit,
+  companyStateCode,
 }: {
-  invoice: {
-    id: string;
-    number: string;
-    clientName: string;
-    projectCode: string;
-    balance: Paise;
-    status: InvoiceStatus;
-    invoiceDate: string;
-  };
+  invoice: InvoiceDetail;
   canReceive: boolean;
   canCancel: boolean;
+  canEdit: boolean;
+  companyStateCode: string;
 }) {
-  const [open, setOpen] = useState<'receipt' | 'cancel' | null>(null);
+  const [open, setOpen] = useState<'receipt' | 'cancel' | 'edit' | null>(null);
   const router = useRouter();
   const live = invoice.status !== 'cancelled';
   const done = () => {
@@ -38,9 +36,14 @@ export function InvoiceActions({
       <Button variant="ghost" onClick={() => window.print()}>
         Print / PDF
       </Button>
-      {live && canCancel ? (
+      {canCancel && invoice.cancellable ? (
         <Button variant="ghost" onClick={() => setOpen('cancel')}>
           Cancel invoice
+        </Button>
+      ) : null}
+      {canEdit && invoice.editable ? (
+        <Button variant="ghost" onClick={() => setOpen('edit')}>
+          Edit
         </Button>
       ) : null}
       {live && canReceive && invoice.balance > 0 ? (
@@ -48,7 +51,25 @@ export function InvoiceActions({
       ) : null}
       {open === 'receipt' ? (
         <ReceiptDrawer
-          targets={[{ kind: 'invoice', ...invoice }]}
+          targets={[
+            {
+              kind: 'invoice',
+              id: invoice.id,
+              number: invoice.number,
+              clientName: invoice.clientName,
+              projectCode: invoice.projectCode,
+              balance: invoice.balance,
+            },
+          ]}
+          onClose={() => setOpen(null)}
+          onSaved={done}
+        />
+      ) : null}
+      {open === 'edit' ? (
+        <InvoiceDrawer
+          invoice={invoice}
+          projects={[]}
+          companyStateCode={companyStateCode}
           onClose={() => setOpen(null)}
           onSaved={done}
         />

@@ -96,6 +96,9 @@ export interface QuoteRevision {
 
 export interface QuoteDetail extends QuoteSummary {
   version: number;
+  /** The client's GSTIN and address as they stand now, for the printed bill-to. */
+  clientGstin: string | null;
+  clientAddress: string | null;
   site: string | null;
   terms: string | null;
   placeOfSupply: string;
@@ -491,10 +494,14 @@ export class QuotationsService {
         site: string | null;
         terms: string | null;
         place_of_supply: string;
+        client_gstin: string | null;
+        client_address: string | null;
       }
     >(
-      `SELECT s.*, q.version, q.site, q.terms, q.place_of_supply
-         FROM (${WITH_STATUS}) s JOIN quotation q ON q.id = s.id WHERE s.id = $2`,
+      `SELECT s.*, q.version, q.site, q.terms, q.place_of_supply, k.gstin AS client_gstin,
+              k.address AS client_address
+         FROM (${WITH_STATUS}) s JOIN quotation q ON q.id = s.id JOIN contact k ON k.id = q.client_id
+        WHERE s.id = $2`,
       [todayIn(), id],
     );
     const r = head.rows[0];
@@ -505,6 +512,8 @@ export class QuotationsService {
     return {
       ...toSummary(r),
       version: r.version,
+      clientGstin: r.client_gstin,
+      clientAddress: r.client_address,
       site: r.site,
       terms: r.terms,
       placeOfSupply: r.place_of_supply,

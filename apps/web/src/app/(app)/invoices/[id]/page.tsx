@@ -29,17 +29,11 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
           </span>
         </div>
         <InvoiceActions
-          invoice={{
-            id: inv.id,
-            number: inv.number,
-            clientName: inv.clientName,
-            projectCode: inv.projectCode,
-            balance: inv.balance,
-            status: inv.status,
-            invoiceDate: inv.invoiceDate,
-          }}
+          invoice={inv}
           canReceive={can(actor, 'receipts', 'edit', inv.projectId)}
           canCancel={can(actor, 'invoices', 'full', inv.projectId)}
+          canEdit={can(actor, 'invoices', 'edit', inv.projectId)}
+          companyStateCode={letterhead.stateCode}
         />
       </div>
       {inv.creditNote ? (

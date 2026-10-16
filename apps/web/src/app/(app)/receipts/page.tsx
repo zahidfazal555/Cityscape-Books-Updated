@@ -10,27 +10,27 @@ export default async function ReceiptsPage() {
   if (!can(actor, 'receipts', 'view'))
     return <EmptyState>You do not have access to client receipts.</EmptyState>;
   const canEdit = can(actor, 'receipts', 'edit');
-  const [receipts, invoices, proformas] = await Promise.all([
+  const { company } = await getSession();
+  const [receipts, totals, invoices, proformas] = await Promise.all([
     services().receipts.list(actor),
+    services().receipts.totalsByMode(actor),
     canEdit && can(actor, 'invoices', 'view')
-      ? services().invoices.list(actor)
+      ? services().invoices.list(actor, { open: true })
       : Promise.resolve([]),
     canEdit && can(actor, 'proformas', 'view')
-      ? services().proformas.list(actor)
+      ? services().proformas.list(actor, { open: true })
       : Promise.resolve([]),
   ]);
   // The picker lists open tax invoices and open proformas (README §4c).
   const targets: ReceiptTarget[] = [
-    ...invoices
-      .filter((i) => i.status !== 'cancelled' && i.balance > 0)
-      .map((i) => ({ kind: 'invoice' as const, ...pickTarget(i) })),
-    ...proformas
-      .filter((p) => p.status !== 'converted' && p.status !== 'cancelled' && p.balance > 0)
-      .map((p) => ({ kind: 'proforma' as const, ...pickTarget(p) })),
+    ...invoices.map((i) => ({ kind: 'invoice' as const, ...pickTarget(i) })),
+    ...proformas.map((p) => ({ kind: 'proforma' as const, ...pickTarget(p) })),
   ];
   return (
     <ReceiptsView
       receipts={receipts}
+      totals={totals}
+      lockDate={company.lockDate}
       targets={targets}
       canEdit={canEdit}
       canDelete={can(actor, 'receipts', 'full')}

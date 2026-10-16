@@ -3,14 +3,14 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { formatDate, toDecimalString } from '@csd/core';
+import { formatDate } from '@csd/core';
 import type { InvoiceSummary } from '@csd/services';
 import { Button, EmptyState } from '@/components/ui';
 import { PageHeader, Pill, Row, Table } from '@/components/kit';
 import { Cards, FilterChips } from '@/components/sales/filter-chips';
 import type { ProjectOption } from '@/components/sales/use-action';
 import { rupees } from '@/lib/format';
-import { INVOICE_STATUS, toCsv } from '@/lib/sales';
+import { INVOICE_STATUS } from '@/lib/sales';
 import { InvoiceDrawer } from './invoice-drawer';
 
 const FILTERS = [
@@ -21,29 +21,6 @@ const FILTERS = [
   ['overdue', 'Overdue'],
   ['cancelled', 'Cancelled'],
 ] as const;
-
-function exportCsv(invoices: InvoiceSummary[]) {
-  const csv = toCsv([
-    ['Number', 'Date', 'Due', 'Client', 'Project', 'Tax type', 'Total', 'Balance due', 'Status'],
-    ...invoices.map((i) => [
-      i.number,
-      i.invoiceDate,
-      i.dueDate,
-      i.clientName,
-      i.projectCode,
-      i.interState ? 'IGST' : 'CGST+SGST',
-      toDecimalString(i.total),
-      toDecimalString(i.balance),
-      INVOICE_STATUS[i.status].label,
-    ]),
-  ]);
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'tax-invoices.csv';
-  a.click();
-  URL.revokeObjectURL(url);
-}
 
 export function InvoicesView({
   invoices,
@@ -69,9 +46,12 @@ export function InvoicesView({
         subtitle="GST invoices CSD/FY/####. Cancelled with a credit note, never deleted."
         action={
           <div className="flex gap-2" data-noprint>
-            <Button variant="ghost" onClick={() => exportCsv(invoices)}>
+            <a
+              href={`/api/v1/invoices/export${filter === 'all' ? '' : `?status=${filter}`}`}
+              className="inline-flex h-9 items-center rounded-md border border-input bg-white px-4 text-[13.5px] font-medium text-primary hover:bg-thead"
+            >
               Export CSV
-            </Button>
+            </a>
             {canEdit ? <Button onClick={() => setAdding(true)}>+ New invoice</Button> : null}
           </div>
         }

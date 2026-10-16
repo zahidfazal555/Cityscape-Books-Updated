@@ -132,14 +132,15 @@ export function ReceiptDrawer({
             Full {rupees(chosen.balance)}
           </button>
         ) : null}
-        <Field label="Mode" htmlFor="r-mode">
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[13px] font-medium text-body">Mode</span>
           <Chips
             label="Mode"
             options={RECEIPT_MODES.map((m) => ({ value: m, label: MODE_LABEL[m] }))}
             value={mode}
             onChange={setMode}
           />
-        </Field>
+        </div>
         <Field label={REFERENCE_LABEL[mode]} htmlFor="r-ref">
           <Input id="r-ref" value={reference} onChange={(e) => setReference(e.target.value)} />
         </Field>

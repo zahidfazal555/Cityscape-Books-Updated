@@ -41,6 +41,7 @@ export function A4Document({
   discountPct,
   interState,
   showBank = true,
+  watermark,
   footer,
 }: {
   title: string;
@@ -53,13 +54,30 @@ export function A4Document({
   discountPct?: number;
   interState: boolean;
   showBank?: boolean;
+  /** e.g. "DRAFT · not valid": printed too, so a draft can't pass for the final document. */
+  watermark?: string | undefined;
   footer?: ReactNode;
 }) {
   return (
     <article
       aria-label={`${title} ${number}`}
-      className="mx-auto w-full max-w-[820px] rounded-lg border border-line bg-white p-8 text-[13px] print:max-w-none print:border-0 print:p-0"
+      className="relative mx-auto w-full max-w-[820px] overflow-hidden rounded-lg border border-line bg-white p-8 text-[13px] print:max-w-none print:border-0 print:p-0"
     >
+      {watermark ? (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 flex items-center justify-center"
+        >
+          <span className="-rotate-[24deg] whitespace-nowrap text-[64px] font-bold tracking-[.08em] text-danger opacity-[.12]">
+            {watermark}
+          </span>
+        </div>
+      ) : null}
+      {watermark ? (
+        <p className="mb-3 rounded border border-danger-line bg-danger-bg px-3 py-1.5 text-center text-[12px] font-semibold text-danger">
+          {watermark}
+        </p>
+      ) : null}
       <header className="flex flex-wrap items-start justify-between gap-4 border-b border-line pb-4">
         <div>
           <img src="/brand/cityscape-logo.png" alt={letterhead.name} className="mb-2 h-8 w-auto" />

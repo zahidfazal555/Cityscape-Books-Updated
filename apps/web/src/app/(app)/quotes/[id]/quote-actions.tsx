@@ -18,6 +18,7 @@ interface Rights {
   proforma: boolean;
   invoice: boolean;
   projects: boolean;
+  viewProject: boolean;
 }
 type Open = 'edit' | 'accept' | 'proforma' | 'invoice' | null;
 
@@ -151,13 +152,15 @@ function draftActions(q: QuoteDetail, r: Rights, h: Handlers): ActionButton[] {
       label: `Approve ${q.discountPct}% discount`,
       onClick: () => h.post('approve-discount'),
     });
-  if (r.edit) list.push({ label: 'Mark as sent', primary: true, onClick: () => h.post('send') });
+  // Sending waits for the owner's approval of a discount (H2); the button would only fail.
+  if (r.edit && (q.discountPct === 0 || q.discountApproved))
+    list.push({ label: 'Mark as sent', primary: true, onClick: () => h.post('send') });
   return list;
 }
 
 function acceptedActions(q: QuoteDetail, r: Rights, h: Handlers): ActionButton[] {
   const list: ActionButton[] = [];
-  if (q.projectId) list.push({ label: 'Open project', onClick: h.openProject });
+  if (q.projectId && r.viewProject) list.push({ label: 'Open project', onClick: h.openProject });
   if (r.proforma) list.push({ label: 'Create proforma', onClick: () => h.open('proforma') });
   if (r.invoice)
     list.push({ label: 'Create tax invoice', primary: true, onClick: () => h.open('invoice') });
@@ -311,19 +314,23 @@ function ProformaFromQuote({
       }
     >
       <div className="flex flex-col gap-4">
-        <Field
-          label="Share of the quote"
-          htmlFor="pf-pct"
-          hint={`${rupees(percentOf(quote.taxable, Number(pct)))} before GST`}
-        >
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[13px] font-medium text-body">Share of the quote</span>
           <Chips
             label="Share of the quote"
             options={SHARES.map((v) => ({ value: v, label: `${v}%` }))}
             value={pct}
             onChange={setPct}
           />
-        </Field>
-        <Field label="Stage name" htmlFor="pf-stage" hint={`Blank = "Advance ${pct}%"`}>
+          <p className="text-xs text-muted">
+            {rupees(percentOf(quote.taxable, Number(pct)))} before GST
+          </p>
+        </div>
+        <Field
+          label="Stage name"
+          htmlFor="pf-stage"
+          hint={`Blank = "${pct === '100' ? 'Full value' : `Advance ${pct}%`}"`}
+        >
           <Input id="pf-stage" value={stage} onChange={(e) => setStage(e.target.value)} />
         </Field>
         <div className="grid grid-cols-2 gap-3">
@@ -394,7 +401,11 @@ function InvoiceFromQuote({
     >
       <div className="flex flex-col gap-4">
         <p className="text-[13px] text-muted">
-          Every quote line is copied with the {quote.discountPct}% discount applied to its rate.
+          Every quote line is copied
+          {quote.discountPct > 0
+            ? ` with the ${quote.discountPct}% discount applied to its rate`
+            : ' at its quoted rate'}
+          .
         </p>
         <Field label="Invoice date" htmlFor="qi-date">
           <Input

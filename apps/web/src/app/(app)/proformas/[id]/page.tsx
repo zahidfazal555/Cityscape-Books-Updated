@@ -14,9 +14,6 @@ export default async function ProformaPage({ params }: { params: Promise<{ id: s
   const { id } = await params;
   const pf = await loadOr404(id, () => services().proformas.get(actor, id));
   const letterhead = await services().settings.letterhead(actor);
-  const client = await services()
-    .contacts.get(actor, pf.clientId)
-    .catch(() => null);
   const status = PROFORMA_STATUS[pf.status];
   return (
     <div className="flex flex-col gap-4">
@@ -47,9 +44,13 @@ export default async function ProformaPage({ params }: { params: Promise<{ id: s
       {pf.invoiceId ? (
         <p className="rounded-md border border-line bg-success-bg px-3 py-2 text-[13px] text-success">
           Converted to tax invoice{' '}
-          <Link href={`/invoices/${pf.invoiceId}`} className="font-mono underline">
-            {pf.invoiceNumber}
-          </Link>
+          {can(actor, 'invoices', 'view', pf.projectId) ? (
+            <Link href={`/invoices/${pf.invoiceId}`} className="font-mono underline">
+              {pf.invoiceNumber}
+            </Link>
+          ) : (
+            <span className="font-mono">{pf.invoiceNumber}</span>
+          )}
           . Its advances were moved onto the invoice.
         </p>
       ) : null}
@@ -59,8 +60,8 @@ export default async function ProformaPage({ params }: { params: Promise<{ id: s
         letterhead={letterhead}
         billTo={{
           name: pf.clientName,
-          gstin: client?.gstin ?? null,
-          address: client?.address ?? null,
+          gstin: pf.clientGstin,
+          address: pf.clientAddress,
         }}
         meta={[
           ['Date', formatDate(pf.pfDate)],

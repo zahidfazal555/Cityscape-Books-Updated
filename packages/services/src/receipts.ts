@@ -62,6 +62,8 @@ export interface Receipt {
   invoiceNumber: string | null;
   /** Set for an advance received against a proforma. */
   proformaNumber: string | null;
+  /** An advance already moved onto its tax invoice: it cannot be deleted. */
+  applied: boolean;
   amount: Paise;
   mode: ReceiptMode;
   reference: string | null;
@@ -88,6 +90,7 @@ export class ReceiptsService {
         project_code: string;
         invoice_number: string | null;
         proforma_number: string | null;
+        applied: boolean;
         amount: string;
         mode: ReceiptMode;
         reference: string | null;
@@ -99,6 +102,8 @@ export class ReceiptsService {
                   WHERE a.receipt_id = r.id) AS invoice_number,
                 (SELECT string_agg(f.number, ', ') FROM receipt_allocation a JOIN proforma f ON f.id = a.proforma_id
                   WHERE a.receipt_id = r.id) AS proforma_number,
+                EXISTS (SELECT 1 FROM receipt_allocation a WHERE a.receipt_id = r.id AND a.applied_at IS NOT NULL)
+                  AS applied,
                 r.amount::text, r.mode, r.reference, r.received_by
            FROM receipt r JOIN contact k ON k.id = r.client_id JOIN project p ON p.id = r.project_id
           WHERE r.deleted_at IS NULL AND ($1::uuid[] IS NULL OR r.project_id = ANY($1::uuid[]))
@@ -115,11 +120,29 @@ export class ReceiptsService {
         projectCode: r.project_code,
         invoiceNumber: r.invoice_number,
         proformaNumber: r.proforma_number,
+        applied: r.applied,
         amount: fromDecimalString(r.amount),
         mode: r.mode,
         reference: r.reference,
         receivedBy: r.received_by,
       }));
+    });
+  }
+
+  /** Live receipts by mode, over every receipt in scope (not just the listed page). */
+  async totalsByMode(actor: Actor): Promise<Record<ReceiptMode, Paise>> {
+    authorize(actor, 'receipts', 'view');
+    const scope = projectScope(actor);
+    return withTenant(this.pool, ctx(actor), async (c) => {
+      const { rows } = await c.query<{ mode: ReceiptMode; total: string }>(
+        `SELECT mode, sum(amount)::text AS total FROM receipt
+          WHERE deleted_at IS NULL AND ($1::uuid[] IS NULL OR project_id = ANY($1::uuid[]))
+          GROUP BY mode`,
+        [scope],
+      );
+      const totals: Record<ReceiptMode, Paise> = { bank: 0, upi: 0, cash: 0, cheque: 0 };
+      for (const r of rows) totals[r.mode] = fromDecimalString(r.total);
+      return totals;
     });
   }
 

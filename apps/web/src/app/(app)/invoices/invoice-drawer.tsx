@@ -2,9 +2,10 @@
 
 import { useState } from 'react';
 import { todayIn } from '@csd/core';
+import type { InvoiceDetail } from '@csd/services';
 import { Button, Field, FormError, Input } from '@/components/ui';
 import { Drawer } from '@/components/kit';
-import { LineGrid, blankLine, previewTotals, toLines } from '@/components/sales/line-grid';
+import { LineGrid, blankLine, draftOf, previewTotals, toLines } from '@/components/sales/line-grid';
 import {
   selectCls,
   textareaCls,
@@ -13,51 +14,107 @@ import {
 } from '@/components/sales/use-action';
 import { apiFetch, newIdempotencyKey } from '@/lib/client';
 
-/** New tax invoice (README §5): project, dates, lines; GST split from the project's client. */
+function initialForm(invoice: InvoiceDetail | null, projects: ProjectOption[]) {
+  return {
+    projectId: invoice?.projectId ?? (projects.length === 1 ? (projects[0]?.id ?? '') : ''),
+    invoiceDate: invoice?.invoiceDate ?? todayIn(),
+    dueDate: invoice?.dueDate ?? '',
+    notes: invoice?.notes ?? '',
+    lines: invoice ? invoice.lines.map(draftOf) : [blankLine()],
+  };
+}
+
+function ProjectPicker({
+  projects,
+  value,
+  onChange,
+}: {
+  projects: ProjectOption[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const project = projects.find((p) => p.id === value);
+  return (
+    <Field
+      label="Project"
+      htmlFor="i-project"
+      hint={project ? `Bill to ${project.clientName}` : undefined}
+    >
+      <select
+        id="i-project"
+        className={selectCls}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">Choose a project…</option>
+        {projects.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.code} · {p.name}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+}
+
+/**
+ * New or edit tax invoice (README §5): project, dates, lines; GST split from the project's
+ * client. An edit keeps the number and project and is allowed only while nothing is received.
+ */
 export function InvoiceDrawer({
+  invoice = null,
   projects,
   companyStateCode,
   onClose,
   onSaved,
 }: {
+  invoice?: InvoiceDetail | null;
   projects: ProjectOption[];
   companyStateCode: string;
   onClose: () => void;
   onSaved: (id: string) => void;
 }) {
-  const [projectId, setProjectId] = useState(projects.length === 1 ? (projects[0]?.id ?? '') : '');
-  const [invoiceDate, setInvoiceDate] = useState(todayIn());
-  const [dueDate, setDueDate] = useState('');
-  const [notes, setNotes] = useState('');
-  const [lines, setLines] = useState([blankLine()]);
+  const [init] = useState(() => initialForm(invoice, projects));
+  const [projectId, setProjectId] = useState(init.projectId);
+  const [invoiceDate, setInvoiceDate] = useState(init.invoiceDate);
+  const [dueDate, setDueDate] = useState(init.dueDate);
+  const [notes, setNotes] = useState(init.notes);
+  const [lines, setLines] = useState(init.lines);
   const [idempotencyKey] = useState(newIdempotencyKey);
   const { busy, error, run } = useAction();
   const project = projects.find((p) => p.id === projectId);
   const totals = previewTotals(lines, {
-    placeOfSupply: project?.clientStateCode ?? null,
+    placeOfSupply: invoice?.placeOfSupply ?? project?.clientStateCode ?? null,
     companyStateCode,
   });
 
   const save = () =>
     run(
-      () =>
-        apiFetch<{ id: string }>('/api/v1/invoices', {
-          method: 'POST',
-          idempotencyKey,
-          body: {
-            projectId,
-            invoiceDate,
-            ...(dueDate ? { dueDate } : {}),
-            lines: toLines(lines),
-            notes: notes.trim() || null,
-          },
-        }),
+      async () => {
+        const body = {
+          invoiceDate,
+          ...(dueDate ? { dueDate } : {}),
+          lines: toLines(lines),
+          notes: notes.trim() || null,
+        };
+        if (!invoice)
+          return apiFetch<{ id: string }>('/api/v1/invoices', {
+            method: 'POST',
+            idempotencyKey,
+            body: { projectId, ...body },
+          });
+        await apiFetch(`/api/v1/invoices/${invoice.id}`, {
+          method: 'PATCH',
+          body: { ...body, version: invoice.version },
+        });
+        return { id: invoice.id };
+      },
       (r) => onSaved((r as { id: string }).id),
     );
 
   return (
     <Drawer
-      title="New tax invoice"
+      title={invoice ? `Edit ${invoice.number}` : 'New tax invoice'}
       width={860}
       onClose={onClose}
       footer={
@@ -66,31 +123,19 @@ export function InvoiceDrawer({
             Cancel
           </Button>
           <Button onClick={save} disabled={busy}>
-            {busy ? 'Issuing…' : 'Issue invoice'}
+            {busy ? 'Saving…' : invoice ? 'Save changes' : 'Issue invoice'}
           </Button>
         </>
       }
     >
       <div className="flex flex-col gap-4">
-        <Field
-          label="Project"
-          htmlFor="i-project"
-          hint={project ? `Bill to ${project.clientName}` : undefined}
-        >
-          <select
-            id="i-project"
-            className={selectCls}
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-          >
-            <option value="">Choose a project…</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.code} · {p.name}
-              </option>
-            ))}
-          </select>
-        </Field>
+        {invoice ? (
+          <p className="text-[13px] text-muted">
+            {invoice.projectCode} · bill to {invoice.clientName}
+          </p>
+        ) : (
+          <ProjectPicker projects={projects} value={projectId} onChange={setProjectId} />
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Field label="Invoice date" htmlFor="i-date">
             <Input

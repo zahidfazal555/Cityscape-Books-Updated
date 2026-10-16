@@ -3,7 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { formatDate } from '@csd/core';
-import type { Receipt } from '@csd/services';
+import type { Paise } from '@csd/core';
+import type { Receipt, ReceiptMode } from '@csd/services';
 import { Button, EmptyState, FormError } from '@/components/ui';
 import { PageHeader, Row, Table } from '@/components/kit';
 import { ReceiptDrawer, type ReceiptTarget } from '@/components/sales/receipt-drawer';
@@ -14,11 +15,15 @@ import { MODE_LABEL, RECEIPT_MODES } from '@/lib/sales';
 
 export function ReceiptsView({
   receipts,
+  totals,
+  lockDate,
   targets,
   canEdit,
   canDelete,
 }: {
   receipts: Receipt[];
+  totals: Record<ReceiptMode, Paise>;
+  lockDate: string | null;
   targets: ReceiptTarget[];
   canEdit: boolean;
   canDelete: boolean;
@@ -46,9 +51,7 @@ export function ReceiptsView({
         {RECEIPT_MODES.map((m) => (
           <div key={m} className="bg-white p-3">
             <dt className="text-xs text-muted">{MODE_LABEL[m]}</dt>
-            <dd className="num text-[18px] font-semibold">
-              {rupees(receipts.filter((r) => r.mode === m).reduce((s, r) => s + r.amount, 0))}
-            </dd>
+            <dd className="num text-[18px] font-semibold">{rupees(totals[m])}</dd>
           </div>
         ))}
       </dl>
@@ -89,7 +92,7 @@ export function ReceiptsView({
               <span className="truncate text-muted">{r.reference ?? '—'}</span>
               <span className="truncate text-muted">{r.receivedBy ?? '—'}</span>
               <span className="num text-right">{rupees(r.amount)}</span>
-              {canDelete ? (
+              {canDelete && deletable(r, lockDate) ? (
                 <button
                   type="button"
                   onClick={() => remove(r)}
@@ -97,6 +100,8 @@ export function ReceiptsView({
                 >
                   Delete
                 </button>
+              ) : canDelete ? (
+                <span />
               ) : null}
             </Row>
           ))}
@@ -114,4 +119,9 @@ export function ReceiptsView({
       ) : null}
     </>
   );
+}
+
+/** Applied advances and receipts in a locked period are refused by the server: no button. */
+function deletable(r: Receipt, lockDate: string | null): boolean {
+  return !r.applied && (lockDate === null || r.receiptDate > lockDate);
 }

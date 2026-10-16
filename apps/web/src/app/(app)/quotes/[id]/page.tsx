@@ -20,9 +20,6 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
     canEdit && q.status === 'draft' && can(actor, 'contacts', 'view')
       ? await services().contacts.list(actor, 'client')
       : [];
-  const client = await services()
-    .contacts.get(actor, q.clientId)
-    .catch(() => null);
   const status = QUOTE_STATUS[q.status];
   return (
     <div className="flex flex-col gap-4">
@@ -45,13 +42,20 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
             proforma: q.projectId !== null && can(actor, 'proformas', 'edit', q.projectId),
             invoice: q.projectId !== null && can(actor, 'invoices', 'edit', q.projectId),
             projects: can(actor, 'projects', 'edit'),
+            viewProject: q.projectId !== null && can(actor, 'projects', 'view', q.projectId),
           }}
-          clients={clients.map((c) => ({ id: c.id, name: c.name, stateCode: c.stateCode }))}
+          clients={withOwnClient(
+            clients.map((c) => ({ id: c.id, name: c.name, stateCode: c.stateCode })),
+            { id: q.clientId, name: q.clientName, stateCode: q.placeOfSupply },
+          )}
           companyStateCode={letterhead.stateCode}
         />
       </div>
       {q.discountPct > 0 && !q.discountApproved ? (
-        <p className="rounded-md border border-warn-line bg-warn-bg px-3 py-2 text-[13px] text-warn">
+        <p
+          data-noprint
+          className="rounded-md border border-warn-line bg-warn-bg px-3 py-2 text-[13px] text-warn"
+        >
           The {q.discountPct}% discount is waiting for the owner&apos;s approval. The quotation
           cannot be sent until then.
         </p>
@@ -62,8 +66,8 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
         letterhead={letterhead}
         billTo={{
           name: q.clientName,
-          gstin: client?.gstin ?? null,
-          address: client?.address ?? null,
+          gstin: q.clientGstin,
+          address: q.clientAddress,
         }}
         meta={[
           ['Quote date', formatDate(q.quoteDate)],
@@ -77,6 +81,13 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
         discountPct={q.discountPct}
         interState={q.totals.interState}
         showBank={false}
+        watermark={
+          q.status === 'draft'
+            ? q.discountPct > 0 && !q.discountApproved
+              ? 'DRAFT · discount not approved'
+              : 'DRAFT · not sent'
+            : undefined
+        }
         footer={
           q.terms ? (
             <div>
@@ -93,10 +104,7 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
           <h2 className="mb-2 font-semibold">Linked documents</h2>
           {q.projectId ? (
             <p>
-              Project{' '}
-              <Link href={`/projects/${q.projectId}`} className="font-mono text-primary">
-                {q.projectCode}
-              </Link>
+              Project <span className="font-mono">{q.projectCode}</span>
             </p>
           ) : (
             <p className="text-muted">No project yet.</p>
@@ -140,4 +148,9 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
       </section>
     </div>
   );
+}
+
+/** The quote's own client is always selectable, even for users who cannot list contacts. */
+function withOwnClient<T extends { id: string }>(list: T[], own: T): T[] {
+  return list.some((c) => c.id === own.id) ? list : [own, ...list];
 }
