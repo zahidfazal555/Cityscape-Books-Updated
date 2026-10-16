@@ -8,3 +8,4 @@ export * from './permissions.js';
 export * from './numbering.js';
 export * from './objects.js';
 export * from './ids.js';
+export * from './documents.js';

@@ -5,8 +5,10 @@ import {
   AuthService,
   ContactsService,
   HibpBreachChecker,
+  InvoicesService,
   MemoryMailer,
   ProjectsService,
+  ReceiptsService,
   SettingsService,
   UsersService,
 } from '@csd/services';
@@ -22,6 +24,8 @@ export interface Services {
   contacts: ContactsService;
   projects: ProjectsService;
   audit: AuditService;
+  invoices: InvoicesService;
+  receipts: ReceiptsService;
 }
 
 const g = globalThis as unknown as { __csd?: Services };
@@ -55,6 +59,8 @@ export function services(): Services {
     contacts: new ContactsService(pool),
     projects: new ProjectsService(pool),
     audit: new AuditService(pool),
+    invoices: new InvoicesService(pool),
+    receipts: new ReceiptsService(pool),
   };
   return g.__csd;
 }
