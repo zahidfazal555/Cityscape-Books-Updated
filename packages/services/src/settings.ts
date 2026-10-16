@@ -15,7 +15,22 @@ export interface CompanySettings {
 export class SettingsService {
   constructor(private readonly pool: pg.Pool) {}
 
+  /** What every signed-in user may see: company name, lock date and FY (header, nav, dates). */
+  async companyInfo(
+    actor: Actor,
+  ): Promise<Pick<CompanySettings, 'name' | 'lockDate' | 'fyStartMonth'>> {
+    if (!actor.active) throw new DomainError('UNAUTHENTICATED', 'Please sign in again.');
+    const { name, lockDate, fyStartMonth } = await this.read(actor);
+    return { name, lockDate, fyStartMonth };
+  }
+
+  /** Full company settings: Users & security is owner-only. */
   async get(actor: Actor): Promise<CompanySettings> {
+    assertOwner(actor);
+    return this.read(actor);
+  }
+
+  private async read(actor: Actor): Promise<CompanySettings> {
     return withTenant(
       this.pool,
       { companyId: actor.companyId, userId: actor.userId },

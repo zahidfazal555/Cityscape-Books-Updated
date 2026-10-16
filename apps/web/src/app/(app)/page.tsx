@@ -1,17 +1,10 @@
 import { can, formatDate, todayIn } from '@csd/core';
-import { withTenant } from '@csd/db';
 import { EmptyState } from '@/components/ui';
-import { requireActor } from '@/lib/session';
+import { getSession } from '@/lib/session';
 import { services } from '@/lib/server';
 
 export default async function DashboardPage() {
-  const actor = await requireActor();
-  const { name } = await withTenant(services().pool, actor, async (c) => {
-    const { rows } = await c.query<{ name: string }>('SELECT name FROM app_user WHERE id = $1', [
-      actor.userId,
-    ]);
-    return rows[0] ?? { name: '' };
-  });
+  const { actor, name } = await getSession();
   const hour = Number(
     new Intl.DateTimeFormat('en-IN', {
       hour: 'numeric',

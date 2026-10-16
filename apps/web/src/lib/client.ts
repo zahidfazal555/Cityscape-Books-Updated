@@ -17,6 +17,16 @@ export class ApiFailure extends Error {
 
 let refreshing: Promise<boolean> | null = null;
 
+/** Unauthenticated endpoints: a 401 from these is an answer, not an expired session. */
+const PUBLIC_AUTH = new Set([
+  '/api/v1/auth/login',
+  '/api/v1/auth/refresh',
+  '/api/v1/auth/logout',
+  '/api/v1/auth/password/forgot',
+  '/api/v1/auth/password/reset',
+  '/api/v1/auth/invite/accept',
+]);
+
 /** One refresh at a time per tab; 409 means another tab already rotated the token. */
 function refreshSession(): Promise<boolean> {
   refreshing ??= fetch('/api/v1/auth/refresh', { method: 'POST', credentials: 'same-origin' })
@@ -43,7 +53,7 @@ export async function apiFetch<T>(
       body: init.body === undefined ? null : JSON.stringify(init.body),
     });
   let res = await send();
-  if (res.status === 401 && !path.startsWith('/api/v1/auth/')) {
+  if (res.status === 401 && !PUBLIC_AUTH.has(path)) {
     if (await refreshSession()) res = await send();
     if (res.status === 401) {
       window.location.assign(
@@ -62,9 +72,4 @@ export async function apiFetch<T>(
   return data as T;
 }
 
-/** Only same-site relative paths are allowed as post-login targets (no open redirect). */
-export function safeNext(next: string | null): string {
-  return next && next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\')
-    ? next
-    : '/';
-}
+export { safeNext } from './redirect';

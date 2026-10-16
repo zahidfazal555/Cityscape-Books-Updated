@@ -65,7 +65,26 @@ test('UAT 8: a scoped Site Engineer only reaches their own project, in the UI an
   expect(list.status()).toBe(200);
   const projects = (await list.json()) as { id: string; code: string }[];
   expect(projects.map((p) => p.code)).toEqual(['CSD-PRJ-0001']);
-  await expect(page.getByText('CSD-PRJ-0002')).toHaveCount(0);
+  const other = await page.request.get('/api/v1/projects/00000000-0000-4000-8000-000000000000');
+  expect(other.status()).toBe(404);
+  // Site Engineers have no dashboard right: the page says so instead of showing data.
+  await expect(page.getByText('Your role has no dashboard')).toBeVisible();
+  const nav = page.getByRole('navigation', { name: 'Main' });
+  await expect(nav).not.toContainText('Tax invoices');
+});
+
+test('after sign-in, a crafted next= cannot send the user to another site', async ({ page }) => {
+  await page.goto('/login?next=%2F%09%2Fevil.example%2Flogin');
+  await page.getByLabel('Work email').fill(email('admin'));
+  await page.getByLabel('Password').fill(PASSWORD);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Good');
+  expect(new URL(page.url()).host).toBe('localhost:3100');
+});
+
+test('the sign-in form posts, never GETs, even before scripts run', async ({ page }) => {
+  await page.goto('/login');
+  await expect(page.locator('form')).toHaveAttribute('method', 'post');
 });
 
 test('API: unauthenticated calls get 401 and cross-site writes are refused', async ({

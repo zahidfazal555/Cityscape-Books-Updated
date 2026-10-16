@@ -1,9 +1,7 @@
 import Image from 'next/image';
 import type { ReactNode } from 'react';
 import { financialYear, todayIn } from '@csd/core';
-import { withTenant } from '@csd/db';
-import { requireActor } from '@/lib/session';
-import { services } from '@/lib/server';
+import { getSession } from '@/lib/session';
 import { SideNav } from './side-nav';
 import { SignOutButton } from './sign-out';
 
@@ -19,17 +17,8 @@ const ROLE_LABEL: Record<string, string> = {
 export const dynamic = 'force-dynamic';
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
-  const actor = await requireActor();
-  const [{ name }, settings] = await Promise.all([
-    withTenant(services().pool, actor, async (c) => {
-      const { rows } = await c.query<{ name: string }>('SELECT name FROM app_user WHERE id = $1', [
-        actor.userId,
-      ]);
-      return rows[0] ?? { name: '' };
-    }),
-    services().settings.get(actor),
-  ]);
-  const fy = financialYear(todayIn(), settings.fyStartMonth);
+  const { actor, name, company } = await getSession();
+  const fy = financialYear(todayIn(), company.fyStartMonth);
 
   return (
     <div className="min-h-screen">
@@ -52,7 +41,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         </div>
       </header>
       <div className="flex">
-        <SideNav actor={actor} lockDate={settings.lockDate} />
+        <SideNav actor={actor} lockDate={company.lockDate} />
         <main className="min-w-0 flex-1 px-7 pb-14 pt-6">
           <div className="mx-auto max-w-[1320px]">{children}</div>
         </main>

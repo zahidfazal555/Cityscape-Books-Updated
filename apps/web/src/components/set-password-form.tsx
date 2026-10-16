@@ -5,11 +5,13 @@ import { useSearchParams } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 import { ApiFailure, apiFetch } from '@/lib/client';
 import { Button, Field, FormError, Input } from '@/components/ui';
+import { useHydrated } from '@/lib/use-hydrated';
 
 /** Shared by "accept invite" and "reset password": both set a password from an emailed link. */
 export function SetPasswordForm({ purpose }: { purpose: 'invite' | 'reset' }) {
   const token = useSearchParams().get('token') ?? '';
   const [done, setDone] = useState(false);
+  const hydrated = useHydrated();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -46,7 +48,7 @@ export function SetPasswordForm({ purpose }: { purpose: 'invite' | 'reset' }) {
     );
   }
   return (
-    <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
+    <form method="post" onSubmit={submit} className="flex flex-col gap-4" noValidate>
       <h2 className="text-[22px] font-semibold">
         {purpose === 'invite' ? 'Set up your account' : 'Choose a new password'}
       </h2>
@@ -73,7 +75,7 @@ export function SetPasswordForm({ purpose }: { purpose: 'invite' | 'reset' }) {
           token ? error : 'This link is missing its token. Open the link from your email again.'
         }
       />
-      <Button type="submit" disabled={busy || !token}>
+      <Button type="submit" disabled={busy || !token || !hydrated}>
         {busy ? 'Saving…' : 'Save password'}
       </Button>
     </form>

@@ -1,4 +1,4 @@
-import { DomainError, type Actor } from '@csd/core';
+import { DomainError, projectScope, stripPnl, type Actor } from '@csd/core';
 import { withTenant } from '@csd/db';
 import type pg from 'pg';
 import { tenantOf } from './validation.js';
@@ -34,6 +34,8 @@ export class AuditService {
       throw new DomainError('FORBIDDEN', 'Only the owner or the auditor can view the audit trail.');
     }
     const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 50), 1), 200);
+    // A project-scoped viewer only sees entries about their own projects (FR-2.4.2).
+    const scope = projectScope(actor);
     return withTenant(this.pool, tenantOf(actor), async (c) => {
       const { rows } = await c.query<{
         id: string;
@@ -52,22 +54,26 @@ export class AuditService {
                 a.outcome, a.before, a.after
            FROM audit_log a LEFT JOIN app_user u ON u.id = a.user_id
           WHERE ($1::bigint IS NULL OR a.id < $1) AND ($2::text IS NULL OR a.entity = $2)
+            AND ($4::text[] IS NULL OR (a.entity = 'project' AND a.entity_id = ANY($4::text[])))
           ORDER BY a.id DESC LIMIT $3`,
-        [opts.beforeId ?? null, opts.entity ?? null, limit],
+        [opts.beforeId ?? null, opts.entity ?? null, limit, scope],
       );
-      return rows.map((r) => ({
-        id: Number(r.id),
-        at: r.at,
-        userId: r.user_id,
-        userName: r.user_name,
-        ip: r.ip,
-        action: r.action,
-        entity: r.entity,
-        entityId: r.entity_id,
-        outcome: r.outcome,
-        before: r.before,
-        after: r.after,
-      }));
+      return stripPnl(
+        actor,
+        rows.map((r) => ({
+          id: Number(r.id),
+          at: r.at,
+          userId: r.user_id,
+          userName: r.user_name,
+          ip: r.ip,
+          action: r.action,
+          entity: r.entity,
+          entityId: r.entity_id,
+          outcome: r.outcome,
+          before: r.before,
+          after: r.after,
+        })),
+      );
     });
   }
 }

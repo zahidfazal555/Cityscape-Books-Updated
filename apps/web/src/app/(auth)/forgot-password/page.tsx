@@ -4,9 +4,11 @@ import Link from 'next/link';
 import { useState, type FormEvent } from 'react';
 import { apiFetch } from '@/lib/client';
 import { Button, Field, FormError, Input } from '@/components/ui';
+import { useHydrated } from '@/lib/use-hydrated';
 
 export default function ForgotPasswordPage() {
   const [sent, setSent] = useState(false);
+  const hydrated = useHydrated();
   const [error, setError] = useState<string | null>(null);
 
   async function submit(e: FormEvent<HTMLFormElement>) {
@@ -38,13 +40,15 @@ export default function ForgotPasswordPage() {
     );
   }
   return (
-    <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
+    <form method="post" onSubmit={submit} className="flex flex-col gap-4" noValidate>
       <h2 className="text-[22px] font-semibold">Reset your password</h2>
       <Field label="Work email" htmlFor="email">
         <Input id="email" name="email" type="email" autoComplete="username" required autoFocus />
       </Field>
       <FormError message={error} />
-      <Button type="submit">Email me a reset link</Button>
+      <Button type="submit" disabled={!hydrated}>
+        Email me a reset link
+      </Button>
       <Link href="/login" className="text-[13px] text-primary hover:underline">
         Back to sign in
       </Link>

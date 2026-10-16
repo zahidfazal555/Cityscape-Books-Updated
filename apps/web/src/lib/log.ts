@@ -1,17 +1,11 @@
-import 'server-only';
+import { mapPlainDeep } from '@csd/core';
 
-const SECRET = /pass(word)?|token|secret|authorization|cookie|pan|bank_?acc|phone/i;
+/** Exact key names (or *Token / *Secret suffixes) whose values never reach the logs. */
+const SECRET_KEY =
+  /^(password|currentPassword|newPassword|passwordHash|password_hash|authorization|cookie|set-cookie|pan|bankAcc|bank_acc|phone|mobile|token)$|(Token|_token|Secret|_secret)$/;
 
-function redact(value: unknown, depth = 0): unknown {
-  if (depth > 6 || value === null || typeof value !== 'object') return value;
-  if (value instanceof Error) return { name: value.name, message: value.message };
-  if (Array.isArray(value)) return value.map((v) => redact(v, depth + 1));
-  return Object.fromEntries(
-    Object.entries(value).map(([k, v]) => [
-      k,
-      SECRET.test(k) ? '[redacted]' : redact(v, depth + 1),
-    ]),
-  );
+export function redactForLog(fields: Record<string, unknown>): unknown {
+  return mapPlainDeep(fields, (k, v) => [k, SECRET_KEY.test(k) ? '[redacted]' : v]);
 }
 
 /** Structured JSON logs to stderr with secrets redacted (ENGINEERING-STANDARDS §2, §10.2). */
@@ -21,6 +15,6 @@ export function log(
   fields: Record<string, unknown> = {},
 ): void {
   process.stderr.write(
-    `${JSON.stringify({ t: new Date().toISOString(), level, msg, ...(redact(fields) as object) })}\n`,
+    `${JSON.stringify({ t: new Date().toISOString(), level, msg, ...(redactForLog(fields) as object) })}\n`,
   );
 }

@@ -30,9 +30,11 @@ const g = globalThis as unknown as { __csd?: Services };
 export function services(): Services {
   if (g.__csd) return g.__csd;
   const e = env();
+  // Fail fast when the pool is exhausted instead of queueing every request behind it.
   const pool = new pg.Pool({
     connectionString: e.DATABASE_URL,
-    max: 10,
+    max: 20,
+    connectionTimeoutMillis: 5_000,
     statement_timeout: 15_000,
   });
   pool.on('error', (error) => log('error', 'pg pool error', { error }));

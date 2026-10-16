@@ -1,15 +1,21 @@
 import 'server-only';
 import { randomUUID } from 'node:crypto';
+import { isIP } from 'node:net';
 import { NextResponse, type NextRequest } from 'next/server';
 import { DomainError, type Actor } from '@csd/core';
 import type { ClientInfo, Tokens } from '@csd/services';
 import { env } from './env';
 import { log } from './log';
+import { limits } from './rate-limit';
 import { services } from './server';
 
 export const COOKIE = { access: 'csd_at', refresh: 'csd_rt', device: 'csd_dev' } as const;
-const MAX_BODY_BYTES = 100_000;
+export const MAX_BODY_BYTES = 100_000;
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/** Marks handlers built by api()/publicApi()/probe(); the route-guard test checks for it. */
+export const GUARD = Symbol.for('csd.route-guard');
+export type GuardKind = 'authenticated' | 'public' | 'probe';
 
 export interface RequestContext<P> {
   req: NextRequest;
@@ -22,30 +28,45 @@ export interface AuthedContext<P> extends RequestContext<P> {
   actor: Actor;
 }
 
-type RouteHandler<P> = (req: NextRequest, route: { params: Promise<P> }) => Promise<Response>;
+type RouteHandler<P> = ((req: NextRequest, route: { params: Promise<P> }) => Promise<Response>) & {
+  [GUARD]: GuardKind;
+};
 
-/** An unauthenticated endpoint (sign-in, password reset). Still CSRF- and size-checked. */
+function tag<P>(
+  kind: GuardKind,
+  fn: (req: NextRequest, route: { params: Promise<P> }) => Promise<Response>,
+): RouteHandler<P> {
+  return Object.assign(fn, { [GUARD]: kind });
+}
+
+/** An unauthenticated endpoint (sign-in, password reset). Still CSRF-, size- and rate-checked. */
 export function publicApi<P = Record<string, never>>(
   fn: (ctx: RequestContext<P>) => Promise<unknown>,
 ): RouteHandler<P> {
-  return (req, route) => run(req, route, async (ctx) => fn(ctx));
+  return tag('public', (req, route) => run(req, route, fn));
 }
 
 /**
  * Every authenticated endpoint goes through this: the session is verified on the server and
- * the handler receives the actor. Permission checks happen inside the services
- * (`authorize(...)`), so a route cannot forget them.
+ * the handler receives the actor. Permission checks happen inside the services.
  */
 export function api<P = Record<string, never>>(
   fn: (ctx: AuthedContext<P>) => Promise<unknown>,
 ): RouteHandler<P> {
-  return (req, route) =>
+  return tag('authenticated', (req, route) =>
     run(req, route, async (ctx) => {
       const token = req.cookies.get(COOKIE.access)?.value ?? bearer(req);
       if (!token) throw new DomainError('UNAUTHENTICATED', 'Please sign in.');
       const { actor } = await services().auth.authenticate(token);
+      limits.api.take(actor.userId);
       return fn({ ...ctx, actor });
-    });
+    }),
+  );
+}
+
+/** Health probes: no session, no body, no data beyond up/down. */
+export function probe(fn: () => Promise<Response>): RouteHandler<Record<string, never>> {
+  return tag('probe', () => fn());
 }
 
 async function run<P>(
@@ -88,7 +109,7 @@ async function run<P>(
   }
 }
 
-/** CSRF defence in depth (cookies are already SameSite=Strict): mutations must be same-origin. */
+/** CSRF defence in depth (on top of SameSite cookies): mutations must be same-origin. */
 function assertSameOrigin(req: NextRequest): void {
   const expected = new URL(env().APP_URL).origin;
   const origin = req.headers.get('origin');
@@ -97,18 +118,41 @@ function assertSameOrigin(req: NextRequest): void {
   throw new DomainError('FORBIDDEN', 'Cross-site request refused.');
 }
 
-async function readJson(req: NextRequest): Promise<unknown> {
-  const text = await req.text();
-  if (text.length === 0) return {};
-  if (Buffer.byteLength(text) > MAX_BODY_BYTES)
-    throw new DomainError('VALIDATION', 'Request is too large.');
+/**
+ * Reads at most MAX_BODY_BYTES: a declared Content-Length over the cap is refused before
+ * reading, and the stream is cut off as soon as it passes the cap, so memory stays bounded.
+ */
+export async function readJson(req: Request): Promise<unknown> {
+  const declared = Number(req.headers.get('content-length') ?? '0');
+  if (declared > MAX_BODY_BYTES) throw new DomainError('TOO_LARGE', 'Request is too large.');
+  const bytes = await readCapped(req.body);
+  const size = bytes.byteLength;
+  if (size === 0) return {};
   if (!(req.headers.get('content-type') ?? '').includes('application/json')) {
     throw new DomainError('VALIDATION', 'Send JSON.');
   }
   try {
-    return JSON.parse(text) as unknown;
+    return JSON.parse(bytes.toString('utf8')) as unknown;
   } catch {
     throw new DomainError('VALIDATION', 'Request body is not valid JSON.');
+  }
+}
+
+/** Reads a body stream, stopping (and cancelling it) as soon as it passes MAX_BODY_BYTES. */
+async function readCapped(body: ReadableStream<Uint8Array> | null): Promise<Buffer> {
+  if (!body) return Buffer.alloc(0);
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return Buffer.concat(chunks);
+    size += value.byteLength;
+    if (size > MAX_BODY_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw new DomainError('TOO_LARGE', 'Request is too large.');
+    }
+    chunks.push(value);
   }
 }
 
@@ -117,43 +161,76 @@ function bearer(req: NextRequest): string | undefined {
   return h?.startsWith('Bearer ') ? h.slice(7) : undefined;
 }
 
+/** "203.0.113.7:51234", "[2001:db8::1]:443" or a bare address → the address, if it is one. */
+export function parseIp(raw: string): string | null {
+  let s = raw.trim();
+  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(s);
+  if (bracketed?.[1]) s = bracketed[1];
+  else if (/^\d{1,3}(\.\d{1,3}){3}:\d+$/.test(s)) s = s.slice(0, s.lastIndexOf(':'));
+  return isIP(s) ? s : null;
+}
+
 /** Client IP = the address added by our nearest trusted proxy, not a client-supplied one. */
-function trustedIp(forwardedFor: string | null): string | null {
+export function trustedIp(forwardedFor: string | null, trusted: number): string | null {
   const hops = (forwardedFor ?? '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  const trusted = env().TRUSTED_PROXIES;
   if (trusted === 0 || hops.length < trusted) return null;
-  const ip = hops[hops.length - trusted] ?? '';
-  return /^[0-9a-fA-F:.]{3,45}$/.test(ip) ? ip : null;
+  return parseIp(hops[hops.length - trusted] ?? '');
 }
 
 export function clientInfo(req: NextRequest): ClientInfo {
   return {
-    ip: trustedIp(req.headers.get('x-forwarded-for')),
+    ip: trustedIp(req.headers.get('x-forwarded-for'), env().TRUSTED_PROXIES),
     userAgent: req.headers.get('user-agent')?.slice(0, 300) ?? null,
     deviceId: req.cookies.get(COOKIE.device)?.value ?? null,
   };
 }
 
+/**
+ * The device id must exist BEFORE the session is created, so the session records it and the
+ * browser's next sign-in is recognised. Returns the client info to use and whether it is new.
+ */
+export function withDevice(client: ClientInfo): { client: ClientInfo; newDevice: string | null } {
+  if (client.deviceId && /^[0-9a-f-]{36}$/i.test(client.deviceId))
+    return { client, newDevice: null };
+  const deviceId = randomUUID();
+  return { client: { ...client, deviceId }, newDevice: deviceId };
+}
+
 const secure = (): boolean => new URL(env().APP_URL).protocol === 'https:';
 
-/** Sets the session cookies: httpOnly, SameSite=Strict, Secure on https. */
+/**
+ * Session cookies, all httpOnly and Secure on https. The access and device cookies are
+ * SameSite=Lax so a link opened from email or WhatsApp keeps the user signed in (mutations are
+ * still origin-checked). The refresh cookie stays Strict and is scoped to /api/v1/auth.
+ */
 export function withSessionCookies(
   res: NextResponse,
   tokens: Tokens,
-  deviceId: string | null,
+  newDevice: string | null,
 ): NextResponse {
-  const base = { httpOnly: true, sameSite: 'strict' as const, secure: secure() };
-  res.cookies.set(COOKIE.access, tokens.accessToken, { ...base, path: '/', maxAge: 15 * 60 });
+  const base = { httpOnly: true, secure: secure() };
+  res.cookies.set(COOKIE.access, tokens.accessToken, {
+    ...base,
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 15 * 60,
+  });
   res.cookies.set(COOKIE.refresh, tokens.refreshToken, {
     ...base,
+    sameSite: 'strict',
     path: '/api/v1/auth',
     expires: tokens.refreshExpiresAt,
   });
-  if (!deviceId)
-    res.cookies.set(COOKIE.device, randomUUID(), { ...base, path: '/', maxAge: 400 * 24 * 3600 });
+  if (newDevice)
+    res.cookies.set(COOKIE.device, newDevice, {
+      ...base,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 400 * 24 * 3600,
+    });
   return res;
 }
 

@@ -5,7 +5,7 @@ Read `docs/ENGINEERING-STANDARDS.md` before changing anything. Precedence: ENGIN
 ## Layout
 - `packages/core` — pure business rules (money, GST, GSTIN, dates/FY, lock date, permissions, numbering). Must not import pg/next/react/@csd/db (lint-enforced).
 - `packages/db` — SQL migrations (`migrations/`), tenant transactions (`withTenant`), numbering, journal posting, audit.
-- `apps/web` — Next.js app (not yet created).
+- `apps/web` — Next.js 16 app: `/api/v1` route handlers (thin; logic in services), pages, `proxy.ts` (CSP nonce). Build with `pnpm --filter @csd/web build` (webpack). E2E: `pnpm --filter @csd/web e2e` (needs a prior build; locally set `PW_CHROMIUM_PATH=/opt/pw-browsers/chromium`).
 
 ## Commands
 - `pnpm check` — typecheck, lint, format check, all tests.
@@ -13,7 +13,7 @@ Read `docs/ENGINEERING-STANDARDS.md` before changing anything. Precedence: ENGIN
 
 ## Rules that must never break
 - Every DB access for a tenant goes through `withTenant(pool, {companyId, userId}, fn)`. `companyId` comes from the session, never from the request.
-- Every handler calls `authorize(actor, module, level, projectId)` from `@csd/core`.
+- Every API route is built with `api()` / `publicApi()` / `probe()` (the route-guard test fails otherwise), and every service method that reads or writes company data calls `authorize(...)` / `assertOwner(...)` first. The only exceptions are the caller's own data (`users.me`, `settings.companyInfo`).
 - Numbers come from `allocateNumber` inside the document's transaction.
 - Journals only via `postJournal` / `reverseJournal`. Never UPDATE or DELETE journals or audit rows.
 - Non-approvers' entries are saved Pending (`requiresApproval`) and post no journal.

@@ -143,6 +143,20 @@ export class UsersService {
     private readonly auth: AuthService,
   ) {}
 
+  /** The caller's own profile. No module right needed: it is only their own data. */
+  async me(actor: Actor): Promise<{ name: string; email: string }> {
+    if (!actor.active) throw new DomainError('UNAUTHENTICATED', 'Please sign in again.');
+    return withTenant(this.pool, ctx(actor), async (c) => {
+      const { rows } = await c.query<{ name: string; email: string }>(
+        'SELECT name, email FROM app_user WHERE id = $1',
+        [actor.userId],
+      );
+      const me = rows[0];
+      if (!me) throw new DomainError('UNAUTHENTICATED', 'Please sign in again.');
+      return me;
+    });
+  }
+
   async list(actor: Actor): Promise<UserRow[]> {
     assertOwner(actor);
     return withTenant(this.pool, ctx(actor), async (c) => {
