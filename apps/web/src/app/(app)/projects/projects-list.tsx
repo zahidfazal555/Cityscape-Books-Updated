@@ -68,7 +68,7 @@ export function ProjectsList({
             <span className="text-right">Cost budget</span>
           </Row>
           {projects.map((p) => (
-            <Row key={p.id} onClick={() => router.push(`/projects/${p.id}`)}>
+            <Row key={p.id}>
               <span className="font-mono text-[11.5px] text-muted">{p.code}</span>
               <span className="min-w-0">
                 <Link

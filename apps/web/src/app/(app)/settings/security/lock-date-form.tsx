@@ -34,7 +34,15 @@ export function LockDateForm({ current }: { current: IsoDate | null }) {
           Lock date
         </label>
         <Input id="lock" type="date" value={value} onChange={(e) => setValue(e.target.value)} />
-        <Button onClick={() => save(value || null)}>Update lock</Button>
+        <Button
+          onClick={() =>
+            value
+              ? save(value)
+              : setError('Choose a date to lock the books till. Use “Remove lock” to unlock.')
+          }
+        >
+          Update lock
+        </Button>
         {current ? (
           <Button variant="ghost" onClick={() => save(null)}>
             Remove lock

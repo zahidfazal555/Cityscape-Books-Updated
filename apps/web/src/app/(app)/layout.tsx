@@ -1,18 +1,10 @@
 import Image from 'next/image';
 import type { ReactNode } from 'react';
 import { financialYear, todayIn } from '@csd/core';
+import { ROLE_LABEL } from '@/lib/labels';
 import { getSession } from '@/lib/session';
 import { SideNav } from './side-nav';
 import { SignOutButton } from './sign-out';
-
-const ROLE_LABEL: Record<string, string> = {
-  owner: 'Owner',
-  admin: 'Admin · Accounts',
-  manager: 'Project Manager',
-  asstmgr: 'Asst. Manager · Project Management',
-  site: 'Site Engineer',
-  auditor: 'Auditor',
-};
 
 export const dynamic = 'force-dynamic';
 

@@ -1,17 +1,12 @@
 import { can, formatDate, todayIn } from '@csd/core';
 import { EmptyState } from '@/components/ui';
+import { istHour } from '@/lib/format';
 import { getSession } from '@/lib/session';
 import { services } from '@/lib/server';
 
 export default async function DashboardPage() {
   const { actor, name } = await getSession();
-  const hour = Number(
-    new Intl.DateTimeFormat('en-IN', {
-      hour: 'numeric',
-      hour12: false,
-      timeZone: 'Asia/Kolkata',
-    }).format(new Date()),
-  );
+  const hour = istHour();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
   const projects = can(actor, 'projects', 'view')
     ? await services().projects.list(actor, 'active')

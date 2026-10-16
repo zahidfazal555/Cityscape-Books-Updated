@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui';
 import { Pill, Row, Table } from '@/components/kit';
-import { apiFetch } from '@/lib/client';
+import { ApiFailure, apiFetch } from '@/lib/client';
+import { istDateTimeSeconds } from '@/lib/format';
 
 export interface AuditRow {
   id: number;
@@ -17,17 +18,6 @@ export interface AuditRow {
   before: unknown;
   after: unknown;
 }
-
-const when = (iso: string) =>
-  new Intl.DateTimeFormat('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    timeZone: 'Asia/Kolkata',
-  }).format(new Date(iso));
 
 /** Fields that changed between before and after, for a one-line summary. */
 function changed(before: unknown, after: unknown): string {
@@ -44,12 +34,23 @@ export function AuditTable({ initial }: { initial: AuditRow[] }) {
   const [done, setDone] = useState(initial.length < 50);
   const [open, setOpen] = useState<number | null>(null);
 
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   async function more() {
     const last = rows.at(-1);
-    if (!last) return;
-    const next = await apiFetch<AuditRow[]>(`/api/v1/audit?before=${last.id}&limit=50`);
-    setRows([...rows, ...next]);
-    setDone(next.length < 50);
+    if (!last || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const next = await apiFetch<AuditRow[]>(`/api/v1/audit?before=${last.id}&limit=50`);
+      setRows((prev) => [...prev, ...next.filter((n) => !prev.some((p) => p.id === n.id))]);
+      setDone(next.length < 50);
+    } catch (e) {
+      setError(e instanceof ApiFailure ? e.message : 'Could not load more entries.');
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -66,7 +67,7 @@ export function AuditTable({ initial }: { initial: AuditRow[] }) {
         {rows.map((r) => (
           <div key={r.id}>
             <Row onClick={() => setOpen(open === r.id ? null : r.id)}>
-              <span className="num text-muted">{when(r.at)}</span>
+              <span className="num text-muted">{istDateTimeSeconds(r.at)}</span>
               <span>
                 {r.userName ?? '—'}
                 {r.ip ? <span className="block text-xs text-subtle">{r.ip}</span> : null}
@@ -99,9 +100,14 @@ export function AuditTable({ initial }: { initial: AuditRow[] }) {
       </Table>
       {!done ? (
         <div className="mt-3">
-          <Button variant="ghost" onClick={more}>
-            Load more
+          <Button variant="ghost" onClick={more} disabled={loading}>
+            {loading ? 'Loading…' : 'Load more'}
           </Button>
+          {error ? (
+            <p role="alert" className="mt-2 text-[13px] text-danger">
+              {error}
+            </p>
+          ) : null}
         </div>
       ) : null}
     </>

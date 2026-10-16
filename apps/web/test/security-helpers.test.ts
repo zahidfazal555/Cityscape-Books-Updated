@@ -104,3 +104,42 @@ describe('log redaction', () => {
     expect(out).toContain('"refreshToken":"[redacted]"');
   });
 });
+
+describe('configuration guards', () => {
+  it('refuses a raised sign-in limit in production and bad values anywhere', async () => {
+    const base = {
+      DATABASE_URL: 'postgres://u:p@localhost/db',
+      JWT_SECRET: Buffer.alloc(32, 1).toString('base64'),
+      APP_URL: 'https://books.example',
+    };
+    const load = async (extra: Record<string, string>) => {
+      const saved = { ...process.env };
+      Object.assign(process.env, base, extra);
+      try {
+        const { vi } = await import('vitest');
+        vi.resetModules();
+        const { env } = await import('../src/lib/env');
+        return env();
+      } finally {
+        process.env = saved;
+      }
+    };
+    await expect(
+      load({
+        NODE_ENV: 'production',
+        MAIL_MODE: 'outbox',
+        CSD_ALLOW_OUTBOX_IN_PRODUCTION: 'e2e',
+        CSD_LOGIN_LIMIT_PER_MINUTE: '10',
+      }),
+    ).resolves.toMatchObject({ CSD_LOGIN_LIMIT_PER_MINUTE: 10 });
+    await expect(
+      load({ NODE_ENV: 'development', CSD_LOGIN_LIMIT_PER_MINUTE: '-1' }),
+    ).rejects.toThrow('CSD_LOGIN_LIMIT_PER_MINUTE');
+    await expect(
+      load({ NODE_ENV: 'development', CSD_LOGIN_LIMIT_PER_MINUTE: '5.5' }),
+    ).rejects.toThrow('CSD_LOGIN_LIMIT_PER_MINUTE');
+    await expect(
+      load({ NODE_ENV: 'production', CSD_LOGIN_LIMIT_PER_MINUTE: '1000' }),
+    ).rejects.toThrow();
+  });
+});

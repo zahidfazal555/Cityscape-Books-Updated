@@ -6,6 +6,7 @@ import type { Rights, Role } from '@csd/core';
 import { Button } from '@/components/ui';
 import { PageHeader, Pill, Row, Table } from '@/components/kit';
 import { ApiFailure, apiFetch } from '@/lib/client';
+import { istDateTime } from '@/lib/format';
 import { ROLE_LABEL } from '@/lib/labels';
 import { UserDrawer, type EditableUser } from './user-drawer';
 
@@ -29,18 +30,6 @@ export interface ProjectOption {
   code: string;
   name: string;
 }
-
-const signedIn = (iso: string | null): string =>
-  iso
-    ? new Intl.DateTimeFormat('en-IN', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        timeZone: 'Asia/Kolkata',
-      }).format(new Date(iso))
-    : '—';
 
 export function UsersAdmin({ users, projects }: { users: UserView[]; projects: ProjectOption[] }) {
   const router = useRouter();
@@ -102,7 +91,7 @@ export function UsersAdmin({ users, projects }: { users: UserView[]; projects: P
             <span>
               {u.role === 'owner' || u.projectsAll ? 'All' : `${u.projectIds.length} selected`}
             </span>
-            <span className="num text-muted">{signedIn(u.lastLoginAt)}</span>
+            <span className="num text-muted">{istDateTime(u.lastLoginAt)}</span>
             <span>
               {!u.isActive ? (
                 <Pill tone="red">Inactive</Pill>

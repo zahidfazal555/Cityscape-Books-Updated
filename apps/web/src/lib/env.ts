@@ -21,6 +21,8 @@ const schema = z.object({
   TRUSTED_PROXIES: z.coerce.number().int().min(0).max(5).default(1),
   /** Only the e2e suite sets this: it runs a production build with the in-memory outbox. */
   CSD_ALLOW_OUTBOX_IN_PRODUCTION: z.literal('e2e').optional(),
+  /** Sign-ins per IP per minute. At most 10 in production (ENGINEERING-STANDARDS §2), except the e2e run. */
+  CSD_LOGIN_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(1000).default(10),
 });
 
 export type Env = z.infer<typeof schema>;
@@ -37,6 +39,15 @@ export function env(): Env {
   const e2e = parsed.data.CSD_ALLOW_OUTBOX_IN_PRODUCTION === 'e2e';
   if (parsed.data.NODE_ENV === 'production' && parsed.data.MAIL_MODE === 'outbox' && !e2e) {
     throw new Error('Invalid configuration — production needs a real mail provider (MAIL_MODE).');
+  }
+  if (
+    parsed.data.NODE_ENV === 'production' &&
+    parsed.data.CSD_LOGIN_LIMIT_PER_MINUTE > 10 &&
+    !e2e
+  ) {
+    throw new Error(
+      'Invalid configuration — CSD_LOGIN_LIMIT_PER_MINUTE cannot exceed 10 in production.',
+    );
   }
   cached = parsed.data;
   return cached;

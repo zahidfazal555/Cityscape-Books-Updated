@@ -11,10 +11,12 @@ const NEXT: Record<ProjectStatus, { to: ProjectStatus; label: string }[]> = {
   active: [
     { to: 'on_hold', label: 'Put on hold' },
     { to: 'completed', label: 'Mark completed' },
+    { to: 'cancelled', label: 'Cancel project' },
   ],
   on_hold: [
     { to: 'active', label: 'Resume' },
     { to: 'completed', label: 'Mark completed' },
+    { to: 'cancelled', label: 'Cancel project' },
   ],
   completed: [{ to: 'active', label: 'Reopen' }],
   cancelled: [{ to: 'active', label: 'Reopen' }],
@@ -37,6 +39,8 @@ export function ProjectActions({
   const moves = NEXT[project.status].filter((m) => m.label !== 'Reopen' || canReopen);
 
   async function move(to: ProjectStatus) {
+    const confirmCancel = `Cancel ${project.code}? Only users with full project rights can reopen it.`;
+    if (to === 'cancelled' && !window.confirm(confirmCancel)) return;
     setError(null);
     try {
       await apiFetch(`/api/v1/projects/${project.id}`, { method: 'PATCH', body: { status: to } });

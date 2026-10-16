@@ -1,4 +1,5 @@
 import { getSession } from '@/lib/session';
+import { OwnerOnlyNotice, isOwner } from '../owner-only';
 import { services } from '@/lib/server';
 import { LockDateForm } from './lock-date-form';
 
@@ -23,6 +24,7 @@ const POLICY = [
 ] as const;
 
 export default async function SecurityPage() {
+  if (!(await isOwner())) return <OwnerOnlyNotice />;
   const { actor } = await getSession();
   const settings = await services().settings.get(actor);
   return (

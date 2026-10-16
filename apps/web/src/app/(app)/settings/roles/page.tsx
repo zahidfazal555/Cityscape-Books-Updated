@@ -1,11 +1,13 @@
 import { MODULES, roleTemplate } from '@csd/core';
 import { Row, Table } from '@/components/kit';
 import { LEVEL_LABEL, MODULE_LABEL, ROLE_LABEL } from '@/lib/labels';
+import { OwnerOnlyNotice, isOwner } from '../owner-only';
 
 const ROLES = ['admin', 'manager', 'asstmgr', 'site', 'auditor'] as const;
 
 /** Read-only matrix of the defaults a role pre-fills (Requirements §2.3, Figure 1). */
-export default function RolesPage() {
+export default async function RolesPage() {
+  if (!(await isOwner())) return <OwnerOnlyNotice />;
   return (
     <>
       <p className="mb-3 text-[13px] text-muted">
