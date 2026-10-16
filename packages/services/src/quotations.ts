@@ -5,6 +5,7 @@ import {
   authorize,
   can,
   computeDocument,
+  formatInr,
   fromDecimalString,
   mulDivHalfUp,
   percentOf,
@@ -214,7 +215,7 @@ export class QuotationsService {
           data.quoteDate,
           data.validTill,
           data.discountPct,
-          discountApproved(actor, data.discountPct, null),
+          discountApproved(actor, data.discountPct, totals.discount, null),
           data.terms ?? null,
           toDecimalString(totals.taxable),
           toDecimalString(totals.total),
@@ -263,7 +264,7 @@ export class QuotationsService {
           data.quoteDate,
           data.validTill,
           data.discountPct,
-          discountApproved(actor, data.discountPct, before),
+          discountApproved(actor, data.discountPct, totals.discount, before),
           pick(data.terms, before.terms),
           toDecimalString(totals.taxable),
           toDecimalString(totals.total),
@@ -284,6 +285,13 @@ export class QuotationsService {
       authorize(actor, 'quotes', 'full', before.projectId ?? undefined);
       if (before.status !== 'draft')
         throw new DomainError('CONFLICT', 'Only a draft quotation can be deleted.');
+      // BUG-082: a revised quote has been sent to the client; its history must stay.
+      if (before.revision > 0) {
+        throw new DomainError(
+          'CONFLICT',
+          'This quotation has been sent before (it has revisions) and cannot be deleted. Mark it declined instead.',
+        );
+      }
       await c.query('DELETE FROM quotation WHERE id = $1', [id]);
       await writeAudit(c, {
         action: 'delete',
@@ -430,11 +438,16 @@ export class QuotationsService {
         throw new DomainError('NOT_FOUND', 'Project not found.');
       authorize(actor, 'invoices', 'edit', projectId);
       const bp = toBasisPoints(q.discountPct);
+      // Discount applied to the rates (FR-5.6); per-unit rounding may differ from the quote by
+      // up to half a paisa per unit.
+      const lines = q.lines.map((l) => ({ ...l, rate: mulDivHalfUp(l.rate, 10_000 - bp, 10_000) }));
+      const taxable = lines.reduce((t, l) => t + mulDivHalfUp(l.rate, l.qtyMilli, 1000), 0);
+      await assertWithinQuote(c, q, taxable);
       const inv = await issueInvoiceTx(c, {
         projectId,
         invoiceDate: data.invoiceDate,
         dueDate: data.dueDate,
-        lines: q.lines.map((l) => ({ ...l, rate: mulDivHalfUp(l.rate, 10_000 - bp, 10_000) })),
+        lines,
         quotationId: id,
       });
       return { id: inv.id, number: inv.number };
@@ -577,16 +590,50 @@ function snapshotOf(q: QuoteDetail): string {
 }
 
 /**
- * A discount is approved when there is none, when an approver set it, or when it is unchanged
- * from an already approved version.
+ * A discount is approved when there is none, when an approver set it, or when neither the rate
+ * nor the rupee amount changed from an already approved version (BUG-085: re-pricing the lines
+ * at the same percentage changes the discount the owner approved).
  */
 function discountApproved(
   actor: Actor,
   pct: number,
-  before: Pick<QuoteDetail, 'discountPct' | 'discountApproved'> | null,
+  amount: Paise,
+  before: Pick<QuoteDetail, 'discountPct' | 'discountApproved' | 'totals'> | null,
 ): boolean {
   if (pct === 0 || !requiresApproval(actor)) return true;
-  return before !== null && before.discountApproved && before.discountPct === pct;
+  return (
+    before !== null &&
+    before.discountApproved &&
+    before.discountPct === pct &&
+    before.totals.discount === amount
+  );
+}
+
+/**
+ * BUG-086: everything raised from one quote (live proformas, and invoices not converted from one
+ * of those proformas) stays within its taxable value. The tolerance covers per-unit rounding
+ * when the discount is applied to rates (half a paisa per unit, FR-5.6). The quote row must
+ * already be locked FOR UPDATE by the caller.
+ */
+export async function assertWithinQuote(
+  c: pg.PoolClient,
+  quote: { id: string; number: string; taxable: Paise; lines: readonly DocLine[] },
+  newTaxable: Paise,
+): Promise<void> {
+  const { rows } = await c.query<{ billed: string }>(
+    `SELECT ((SELECT coalesce(sum(taxable), 0) FROM proforma WHERE quotation_id = $1 AND status <> 'cancelled')
+           + (SELECT coalesce(sum(taxable), 0) FROM invoice
+               WHERE quotation_id = $1 AND proforma_id IS NULL AND status <> 'cancelled'))::text AS billed`,
+    [quote.id],
+  );
+  const billed = fromDecimalString(rows[0]?.billed ?? '0');
+  const tolerance = quote.lines.reduce((t, l) => t + Math.ceil(l.qtyMilli / 2000), 0);
+  if (billed + newTaxable > quote.taxable + tolerance) {
+    throw new DomainError(
+      'CONFLICT',
+      `This would bill more than ${quote.number} (already billed ${formatInr(billed)} of ${formatInr(quote.taxable)} before GST).`,
+    );
+  }
 }
 
 export function quoteTotals(

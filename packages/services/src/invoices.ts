@@ -436,11 +436,14 @@ export class InvoicesService {
     const data = parse(cancelSchema, input);
     authorize(actor, 'invoices', 'full');
     return withTenant(this.pool, ctx(actor), async (c) => {
+      // Proforma before invoice: the same order as receipts and conversions take, so no deadlock.
+      await c.query('SELECT 1 FROM proforma WHERE invoice_id = $1 FOR UPDATE', [id]);
       const inv = await this.load(c, actor, id, true);
       authorize(actor, 'invoices', 'full', inv.projectId);
       if (inv.status === 'cancelled')
         throw new DomainError('CONFLICT', 'This invoice is already cancelled.');
-      if (inv.received > 0)
+      const advances = await appliedAdvances(c, id);
+      if (inv.received > advances)
         throw new DomainError('CONFLICT', 'Delete its receipts before cancelling this invoice.');
       if (data.cnDate < inv.invoiceDate) {
         throw new DomainError(
@@ -492,6 +495,8 @@ export class InvoicesService {
         `UPDATE invoice SET status = 'cancelled', version = version + 1 WHERE id = $1`,
         [id],
       );
+      if (advances > 0)
+        await releaseAdvances(c, inv, advances, { cnId, number, cnDate: data.cnDate });
       await writeAudit(c, {
         action: 'cancel',
         entity: 'invoice',
@@ -629,6 +634,50 @@ function assertDue(invoiceDate: IsoDate, dueDate: IsoDate): void {
       'dueDate',
     );
   }
+}
+
+/** Proforma advances applied to this invoice on conversion (live receipts only). */
+async function appliedAdvances(c: pg.PoolClient, invoiceId: string): Promise<Paise> {
+  const { rows } = await c.query<{ amount: string }>(
+    `SELECT coalesce(sum(a.amount), 0)::text AS amount FROM receipt_allocation a JOIN receipt r ON r.id = a.receipt_id
+      WHERE a.invoice_id = $1 AND a.applied_at IS NOT NULL AND r.deleted_at IS NULL`,
+    [invoiceId],
+  );
+  return fromDecimalString(rows[0]?.amount ?? '0');
+}
+
+/**
+ * BUG-084: cancelling a converted invoice hands its advances back to the proforma. They are
+ * held as customer advances again (Dr receivable / Cr customer advances on the credit-note
+ * date), and the proforma returns to Sent so it can be corrected and converted again.
+ */
+async function releaseAdvances(
+  c: pg.PoolClient,
+  inv: InvoiceDetail,
+  amount: Paise,
+  cn: { cnId: string; number: string; cnDate: IsoDate },
+): Promise<void> {
+  await postJournal(c, {
+    txnDate: cn.cnDate,
+    sourceType: 'advance_released',
+    sourceId: cn.cnId,
+    narration: `Advances on ${inv.number} released by credit note ${cn.number}`,
+    lines: [
+      { accountCode: '1100', debit: amount, contactId: inv.clientId, projectId: inv.projectId },
+      { accountCode: '2100', credit: amount, contactId: inv.clientId, projectId: inv.projectId },
+    ],
+  });
+  await c.query(
+    `UPDATE receipt_allocation SET invoice_id = NULL, applied_at = NULL
+      WHERE invoice_id = $1 AND applied_at IS NOT NULL`,
+    [inv.id],
+  );
+  await c.query(
+    `UPDATE proforma SET status = 'sent', invoice_id = NULL, converted_at = NULL, advance_journal_id = NULL,
+            version = version + 1, updated_by = app_user_id()
+      WHERE invoice_id = $1`,
+    [inv.id],
+  );
 }
 
 async function journalOf(c: pg.PoolClient, invoiceId: string): Promise<string> {

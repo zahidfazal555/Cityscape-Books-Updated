@@ -62,10 +62,11 @@ CREATE TABLE quotation_revision (
   snapshot     jsonb NOT NULL,
   created_at   timestamptz NOT NULL DEFAULT now(),
   created_by   uuid,
-  FOREIGN KEY (company_id, quotation_id) REFERENCES quotation (company_id, id) ON DELETE CASCADE,
+  -- No cascade (BUG-082): a quote with history (revision > 0) is never deleted.
+  FOREIGN KEY (company_id, quotation_id) REFERENCES quotation (company_id, id),
   UNIQUE (quotation_id, revision)
 );
-CREATE TRIGGER quotation_revision_immutable BEFORE UPDATE ON quotation_revision
+CREATE TRIGGER quotation_revision_immutable BEFORE UPDATE OR DELETE ON quotation_revision
   FOR EACH ROW EXECUTE FUNCTION refuse_change();
 
 CREATE TABLE proforma (
@@ -136,23 +137,39 @@ CREATE INDEX receipt_allocation_proforma ON receipt_allocation (proforma_id);
 ALTER TABLE receipt_allocation
   ADD CONSTRAINT receipt_allocation_applied CHECK (applied_at IS NULL OR (proforma_id IS NOT NULL AND invoice_id IS NOT NULL));
 
--- Applying an advance to its tax invoice (setting invoice_id + applied_at on an allocation that
--- had neither) is dated on the conversion day, not the receipt day: an advance received in a
--- locked month can still be applied to an invoice raised in an open one. Any other change to an
--- allocation still needs the receipt's month to be open.
+-- Two allocation changes are lock-checked on the invoice, not on the receipt's own month, so an
+-- advance received in a now-locked month still follows its proforma:
+--  * apply (invoice_id + applied_at set on a row that had neither): the target invoice must be
+--    the proforma's own, in an open period, and applied_at must be its date (BUG-083);
+--  * un-apply (both cleared): only while the invoice is cancelled, whose credit note is dated
+--    in an open period.
+-- Any other change to an allocation still needs the receipt's month to be open.
 CREATE OR REPLACE FUNCTION child_lock_guard() RETURNS trigger
   LANGUAGE plpgsql AS
 $$
-DECLARE v_date date;
+DECLARE v_date date; v_inv record;
 BEGIN
   -- Nested IFs: PL/pgSQL may evaluate every operand, and invoice_line rows have no applied_at.
   IF TG_TABLE_NAME = 'receipt_allocation' AND TG_OP = 'UPDATE' THEN
-    IF OLD.invoice_id IS NULL AND OLD.applied_at IS NULL
-       AND NEW.invoice_id IS NOT NULL AND NEW.applied_at IS NOT NULL
-       AND NEW.id = OLD.id AND NEW.company_id = OLD.company_id AND NEW.receipt_id = OLD.receipt_id
+    IF NEW.id = OLD.id AND NEW.company_id = OLD.company_id AND NEW.receipt_id = OLD.receipt_id
        AND NEW.proforma_id IS NOT DISTINCT FROM OLD.proforma_id AND NEW.amount = OLD.amount THEN
-      PERFORM assert_not_locked(NEW.company_id, NEW.applied_at);
-      RETURN NEW;
+      IF OLD.invoice_id IS NULL AND OLD.applied_at IS NULL
+         AND NEW.invoice_id IS NOT NULL AND NEW.applied_at IS NOT NULL THEN
+        SELECT invoice_date, proforma_id INTO v_inv FROM invoice WHERE id = NEW.invoice_id;
+        IF v_inv.proforma_id IS DISTINCT FROM NEW.proforma_id OR NEW.applied_at <> v_inv.invoice_date THEN
+          RAISE EXCEPTION 'an advance can only be applied to its own proforma''s invoice, on its date'
+            USING ERRCODE = 'CB422';
+        END IF;
+        PERFORM assert_not_locked(NEW.company_id, v_inv.invoice_date);
+        RETURN NEW;
+      END IF;
+      IF OLD.invoice_id IS NOT NULL AND OLD.applied_at IS NOT NULL
+         AND NEW.invoice_id IS NULL AND NEW.applied_at IS NULL THEN
+        IF NOT EXISTS (SELECT 1 FROM invoice WHERE id = OLD.invoice_id AND status = 'cancelled') THEN
+          RAISE EXCEPTION 'an advance can only be released from a cancelled invoice' USING ERRCODE = 'CB422';
+        END IF;
+        RETURN NEW;
+      END IF;
     END IF;
   END IF;
   IF TG_OP IN ('UPDATE', 'DELETE') THEN

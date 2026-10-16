@@ -22,7 +22,7 @@ import type pg from 'pg';
 import { z } from 'zod';
 import { readDocLines, writeDocLines, type DocLine } from './doc-lines.js';
 import { issueInvoiceTx, lineSchema } from './invoices.js';
-import { acceptedProject, quoteTotals } from './quotations.js';
+import { acceptedProject, assertWithinQuote, quoteTotals } from './quotations.js';
 import { companyRow, isoDate, parse, tenantOf as ctx, type CompanyRow } from './validation.js';
 
 export const PROFORMA_STATUSES = [
@@ -204,6 +204,11 @@ export class ProformasService {
       const q = await quoteForStage(c, actor, quotationId);
       const stage = data.stage ?? (data.pct === 100 ? 'Full value' : `Advance ${data.pct}%`);
       const lines = stageLines(q, data.pct, stage);
+      await assertWithinQuote(
+        c,
+        { ...q, taxable: q.totals.taxable },
+        lines.reduce((t, l) => t + l.rate, 0),
+      );
       return insertProforma(
         c,
         { projectId: q.projectId, stage, pfDate: data.pfDate, dueDate: data.dueDate, lines },
@@ -316,6 +321,15 @@ export class ProformasService {
         throw new DomainError(
           'VALIDATION',
           'The invoice cannot be dated before the proforma.',
+          'invoiceDate',
+        );
+      }
+      // BUG-087: the invoice cannot predate the advances it absorbs.
+      const latest = pf.advanceReceipts.reduce((d, r) => (r.date > d ? r.date : d), '');
+      if (invoiceDate < latest) {
+        throw new DomainError(
+          'VALIDATION',
+          `The invoice cannot be dated before the last advance (${latest}).`,
           'invoiceDate',
         );
       }
@@ -502,6 +516,7 @@ async function insertProforma(
 }
 
 interface StageQuote {
+  id: string;
   number: string;
   title: string;
   projectId: string;
@@ -510,6 +525,7 @@ interface StageQuote {
 }
 
 async function quoteForStage(c: pg.PoolClient, actor: Actor, id: string): Promise<StageQuote> {
+  // FOR UPDATE: two stage proformas from one quote are checked against its value one at a time.
   const { rows } = await c.query<{
     number: string;
     title: string;
@@ -519,11 +535,12 @@ async function quoteForStage(c: pg.PoolClient, actor: Actor, id: string): Promis
     place_of_supply: string;
   }>(
     `SELECT number, title, status, project_id, discount_pct::text, place_of_supply
-       FROM quotation WHERE id = $1 FOR SHARE`,
+       FROM quotation WHERE id = $1 FOR UPDATE`,
     [id],
   );
   const q = rows[0];
-  if (!q || (q.project_id !== null && !can(actor, 'quotes', 'view', q.project_id)))
+  // BUG-088: not found before any status check, so an invisible quote is never confirmed.
+  if (!q || !can(actor, 'quotes', 'view', q.project_id ?? undefined))
     throw new DomainError('NOT_FOUND', 'Quotation not found.');
   const projectId = acceptedProject({ status: q.status as 'accepted', projectId: q.project_id });
   if (!can(actor, 'proformas', 'view', projectId))
@@ -532,6 +549,7 @@ async function quoteForStage(c: pg.PoolClient, actor: Actor, id: string): Promis
   const lines = await readDocLines(c, 'quotation', id);
   const company = await companyRow(c);
   return {
+    id,
     number: q.number,
     title: q.title,
     projectId,

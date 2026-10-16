@@ -215,11 +215,11 @@ describe('quotation rules', () => {
     const { clientId } = await clientProject(owner);
     const q = await quotes.create(owner, quoteInput(clientId));
     await expect(quotes.remove(manager, q.id)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    const draft = await quotes.create(owner, quoteInput(clientId));
+    await quotes.remove(owner, draft.id);
+    await expect(quotes.get(owner, draft.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
     await quotes.send(owner, q.id);
     await expect(quotes.remove(owner, q.id)).rejects.toMatchObject({ code: 'CONFLICT' });
-    await quotes.revise(owner, q.id);
-    await quotes.remove(owner, q.id);
-    await expect(quotes.get(owner, q.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
   it('edits only drafts, with a version check', async () => {
@@ -440,5 +440,169 @@ describe('proformas and advances', () => {
     await expect(
       receipts.record(owner, { receiptDate: '2026-10-05', amount: 1_00, mode: 'cash' }),
     ).rejects.toMatchObject({ code: 'VALIDATION' });
+  });
+});
+
+describe('review regressions (PR 7)', () => {
+  const pfInput = (projectId: string, rate = 10_000_00) => ({
+    projectId,
+    stage: 'Advance',
+    pfDate: '2026-10-01',
+    dueDate: validTill(),
+    lines: [{ description: 'Advance', qtyMilli: 1000, rate }],
+  });
+
+  it('BUG-082: a revised quote keeps its history: it cannot be deleted, nor its revisions', async () => {
+    const { clientId } = await clientProject(owner);
+    const q = await quotes.create(owner, quoteInput(clientId));
+    await quotes.send(owner, q.id);
+    await quotes.revise(owner, q.id);
+    await expect(quotes.remove(owner, q.id)).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(
+      appPool.query('DELETE FROM quotation_revision WHERE quotation_id = $1', [q.id]),
+    ).rejects.toBeTruthy();
+    expect((await quotes.get(owner, q.id)).revisions).toHaveLength(1);
+  });
+
+  it('BUG-083: the database only applies an advance to its own proforma’s invoice, in an open period', async () => {
+    const { projectId } = await clientProject(owner);
+    const other = await invoices.create(owner, {
+      projectId,
+      invoiceDate: '2026-10-01',
+      dueDate: '2027-03-31',
+      lines: [{ description: 'Other work', qtyMilli: 1000, rate: 10_000_00 }],
+    });
+    const pf = await proformas.create(owner, pfInput(projectId));
+    await receipts.record(owner, {
+      proformaId: pf.id,
+      receiptDate: '2026-10-02',
+      amount: 5_000_00,
+      mode: 'cash',
+    });
+    const apply = (invoiceId: string, date: string) =>
+      superPool.query(
+        `UPDATE receipt_allocation SET invoice_id = $2, applied_at = $3 WHERE proforma_id = $1`,
+        [pf.id, invoiceId, date],
+      );
+    await expect(apply(other.id, '2026-10-01')).rejects.toMatchObject({ code: 'CB422' });
+    // Its own invoice, but backdated into a locked period.
+    const conv = await proformas.convert(owner, pf.id, { invoiceDate: '2026-10-12' });
+    // Releasing an advance is only for a cancelled invoice.
+    await expect(
+      superPool.query(
+        `UPDATE receipt_allocation SET invoice_id = NULL, applied_at = NULL WHERE proforma_id = $1`,
+        [pf.id],
+      ),
+    ).rejects.toMatchObject({ code: 'CB422' });
+    await setLock(f.companyId, '2026-10-13');
+    await expect(
+      superPool.query(`UPDATE receipt_allocation SET amount = amount WHERE invoice_id = $1`, [
+        conv.invoiceId,
+      ]),
+    ).rejects.toMatchObject({ code: 'CB423' });
+  });
+
+  it('BUG-084: cancelling a converted invoice returns its advances to the proforma, which can convert again', async () => {
+    const { projectId } = await clientProject(owner);
+    const pf = await proformas.create(owner, pfInput(projectId));
+    await receipts.record(owner, {
+      proformaId: pf.id,
+      receiptDate: '2026-10-02',
+      amount: 5_000_00,
+      mode: 'cash',
+    });
+    const advancesBefore = await accountBalance(f.companyId, '2100');
+    const arBefore = await accountBalance(f.companyId, '1100');
+    const conv = await proformas.convert(owner, pf.id, { invoiceDate: '2026-10-12' });
+    await invoices.cancel(owner, conv.invoiceId, { cnDate: '2026-10-13', reason: 'Wrong lines' });
+    expect(await accountBalance(f.companyId, '2100')).toBe(advancesBefore);
+    expect(await accountBalance(f.companyId, '1100')).toBe(arBefore);
+    expect(await proformas.get(owner, pf.id)).toMatchObject({
+      status: 'partially_paid',
+      advances: 5_000_00,
+      invoiceId: null,
+    });
+    const again = await proformas.convert(owner, pf.id, { invoiceDate: '2026-10-14' });
+    expect((await invoices.get(owner, again.invoiceId)).received).toBe(5_000_00);
+    const tb = await trialBalance(f.companyId);
+    expect(tb.dr).toBe(tb.cr);
+    // A receipt taken directly against the invoice must still be deleted first.
+    await receipts.record(owner, {
+      invoiceId: again.invoiceId,
+      receiptDate: '2026-10-14',
+      amount: 1_00,
+      mode: 'cash',
+    });
+    await expect(
+      invoices.cancel(owner, again.invoiceId, { cnDate: '2026-10-14', reason: 'Wrong lines' }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('BUG-085: re-pricing an approved quote at the same discount % needs approval again', async () => {
+    const { clientId } = await clientProject(owner);
+    const small = [
+      { description: 'Shelf', qtyMilli: 1000, unit: 'nos', rate: 1_000_00, gstRate: 18 },
+    ];
+    const q = await quotes.create(manager, quoteInput(clientId, { discountPct: 20, lines: small }));
+    await quotes.approveDiscount(owner, q.id);
+    const v = await quotes.get(manager, q.id);
+    await quotes.update(manager, q.id, {
+      ...quoteInput(clientId, {
+        discountPct: 20,
+        lines: [{ ...small[0]!, rate: 50_00_000_00 }],
+      }),
+      version: v.version,
+    });
+    expect((await quotes.get(manager, q.id)).discountApproved).toBe(false);
+    await expect(quotes.send(manager, q.id)).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('BUG-086: an accepted quote cannot be billed beyond its value', async () => {
+    const q = await acceptedQuote();
+    const pfArgs = { pct: 100, pfDate: '2026-10-03', dueDate: '2026-10-10' };
+    const first = await proformas.fromQuote(owner, q.id, pfArgs);
+    await expect(proformas.fromQuote(owner, q.id, pfArgs)).rejects.toMatchObject({
+      code: 'CONFLICT',
+    });
+    await expect(
+      quotes.toInvoice(owner, q.id, { invoiceDate: '2026-10-12' }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+    // Converting does not count twice, and a cancelled proforma frees its share.
+    await proformas.cancel(owner, first.id);
+    const pairs = await Promise.allSettled([
+      proformas.fromQuote(owner, q.id, { ...pfArgs, pct: 60 }),
+      proformas.fromQuote(owner, q.id, { ...pfArgs, pct: 60 }),
+    ]);
+    expect(pairs.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const ok = pairs.find((r) => r.status === 'fulfilled') as PromiseFulfilledResult<{
+      id: string;
+    }>;
+    await proformas.convert(owner, ok.value.id, { invoiceDate: '2026-10-12' });
+    await proformas.fromQuote(owner, q.id, { ...pfArgs, pct: 40 });
+  });
+
+  it('BUG-087: a conversion cannot be dated before the advances it applies', async () => {
+    const { projectId } = await clientProject(owner);
+    const pf = await proformas.create(owner, pfInput(projectId));
+    await receipts.record(owner, {
+      proformaId: pf.id,
+      receiptDate: '2026-10-08',
+      amount: 5_000_00,
+      mode: 'cash',
+    });
+    await expect(
+      proformas.convert(owner, pf.id, { invoiceDate: '2026-10-03' }),
+    ).rejects.toMatchObject({ code: 'VALIDATION', field: 'invoiceDate' });
+    await proformas.convert(owner, pf.id, { invoiceDate: '2026-10-08' });
+  });
+
+  it('BUG-088: a quote the caller cannot see is not found, whatever its status', async () => {
+    const { clientId } = await clientProject(owner);
+    const q = await quotes.create(owner, quoteInput(clientId));
+    const base = actorFor(f, manager.userId, 'manager');
+    const noQuotes: Actor = { ...base, rights: { ...base.rights, quotes: 'none' } };
+    await expect(
+      proformas.fromQuote(noQuotes, q.id, { pct: 30, pfDate: '2026-10-03', dueDate: '2026-10-10' }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 });
