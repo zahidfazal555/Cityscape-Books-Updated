@@ -178,3 +178,60 @@ describe('review regressions (db)', () => {
     expect((await appPool.query('SELECT * FROM session')).rows).toHaveLength(0);
   });
 });
+
+describe('second review regressions (db)', () => {
+  it('BUG-013: revoked and expired sessions are never returned by the refresh lookup', async () => {
+    await superPool.query(
+      `INSERT INTO session (company_id, user_id, refresh_token_hash, expires_at, revoked_at) VALUES
+         ($1, $2, 'hash-revoked', now() + interval '7 days', now()),
+         ($1, $2, 'hash-expired', now() - interval '1 second', NULL)`,
+      [f.companyId, f.ownerId],
+    );
+    for (const hash of ['hash-revoked', 'hash-expired', 'hash-unknown']) {
+      expect((await appPool.query('SELECT * FROM auth_find_session($1)', [hash])).rows).toEqual([]);
+    }
+  });
+
+  it('BUG-014: the owner role is isolated outside the auth functions; the app role cannot open the lookup', async () => {
+    expect((await migratorPool.query('SELECT * FROM session')).rows).toHaveLength(0);
+    expect((await migratorPool.query('SELECT * FROM app_user')).rows).toHaveLength(0);
+    const c = await appPool.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query(`SELECT set_config('app.auth_lookup', 'on', true)`);
+      expect((await c.query('SELECT * FROM session')).rows).toHaveLength(0);
+      expect((await c.query('SELECT * FROM app_user')).rows).toHaveLength(0);
+      await c.query('ROLLBACK');
+    } finally {
+      c.release();
+    }
+  });
+
+  it('BUG-015: a caller-supplied posted_txid is overwritten with the real transaction id', async () => {
+    await expect(
+      withTenant(appPool, ctx(), async (c) => {
+        const { rows } = await c.query<{ ok: boolean }>(
+          `INSERT INTO journal (company_id, txn_date, source_type, narration, posted_txid)
+           VALUES (app_company_id(), '2026-10-14', 'manual', 'forged',
+                   ((pg_current_xact_id()::text)::bigint + 5)::text::xid8)
+           RETURNING posted_txid = pg_current_xact_id() AS ok`,
+        );
+        expect(rows[0]).toEqual({ ok: true });
+        throw new Error('rollback');
+      }),
+    ).rejects.toThrow('rollback');
+  });
+
+  it('BUG-016: Errors in audit snapshots keep name and message, and nested secrets are redacted', () => {
+    const err = Object.assign(new Error('upstream failed'), {
+      config: { headers: { authorization: 'Bearer x' } },
+    });
+    expect(redact({ after: err })).toEqual({
+      after: {
+        name: 'Error',
+        message: 'upstream failed',
+        config: { headers: { authorization: '[redacted]' } },
+      },
+    });
+  });
+});

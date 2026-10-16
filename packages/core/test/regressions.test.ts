@@ -62,3 +62,24 @@ describe('review regressions (core)', () => {
     });
   });
 });
+
+describe('second review regressions (core)', () => {
+  class ProjectSummary {
+    constructor(
+      readonly name: string,
+      readonly profit: number,
+      readonly margin: number,
+    ) {}
+  }
+
+  it('BUG-011: profit inside class instances is still stripped', () => {
+    expect(stripPnl(pm, { p: new ProjectSummary('A', 5, 0.2) })).toEqual({ p: { name: 'A' } });
+  });
+
+  it('BUG-012: a "__proto__" key is copied as data, never used as a prototype', () => {
+    const input = JSON.parse('{"__proto__": {"x": 1}, "a": 2}') as Record<string, unknown>;
+    const out = stripPnl(pm, input) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    expect(JSON.stringify(out)).toBe('{"__proto__":{"x":1},"a":2}');
+  });
+});

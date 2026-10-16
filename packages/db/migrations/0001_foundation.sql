@@ -385,7 +385,14 @@ $$;
 
 CREATE FUNCTION journal_check_lock() RETURNS trigger
   LANGUAGE plpgsql AS
-$$ BEGIN PERFORM assert_not_locked(NEW.company_id, NEW.txn_date); RETURN NEW; END $$;
+$$
+BEGIN
+  PERFORM assert_not_locked(NEW.company_id, NEW.txn_date);
+  NEW.posted_txid := pg_current_xact_id();   -- never trust a caller-supplied value
+  NEW.posted_at := now();
+  RETURN NEW;
+END
+$$;
 
 CREATE TRIGGER journal_lock BEFORE INSERT ON journal
   FOR EACH ROW EXECUTE FUNCTION journal_check_lock();
@@ -438,37 +445,58 @@ CREATE TRIGGER journal_line_posting_only BEFORE INSERT ON journal_line
 -- and returns only what sign-in needs.
 -- ---------------------------------------------------------------------------------------------
 
+-- These SECURITY DEFINER functions run as the migration (owner) role. RLS stays FORCED on
+-- app_user and session; an extra policy, scoped TO the owner role, opens them only while
+-- `app.auth_lookup` is on, which only these functions set. The app role can set the variable
+-- too, but the policy does not apply to it.
 CREATE FUNCTION auth_find_user(p_email citext)
   RETURNS TABLE (id uuid, company_id uuid, password_hash text, role text, is_active boolean,
                  access_expires_at timestamptz, failed_attempts integer, locked_until timestamptz)
-  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS
+  LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS
 $$
-  SELECT u.id, u.company_id, u.password_hash, u.role, u.is_active, u.access_expires_at,
-         u.failed_attempts, u.locked_until
-  FROM app_user u WHERE u.email = p_email
+BEGIN
+  PERFORM set_config('app.auth_lookup', 'on', true);
+  RETURN QUERY
+    SELECT u.id, u.company_id, u.password_hash, u.role, u.is_active, u.access_expires_at,
+           u.failed_attempts, u.locked_until
+    FROM app_user u WHERE u.email = p_email;
+  PERFORM set_config('app.auth_lookup', '', true);
+END
 $$;
 
 -- Records a failed sign-in: 5 failures lock the account for 15 minutes (Tech Spec §7).
 CREATE FUNCTION auth_record_failure(p_user uuid) RETURNS timestamptz
-  LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = public, pg_temp AS
+  LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public, pg_temp AS
 $$
+DECLARE v_until timestamptz;
+BEGIN
+  PERFORM set_config('app.auth_lookup', 'on', true);
   UPDATE app_user
      SET failed_attempts = CASE WHEN failed_attempts + 1 >= 5 THEN 0 ELSE failed_attempts + 1 END,
          locked_until    = CASE WHEN failed_attempts + 1 >= 5 THEN now() + interval '15 minutes'
                                 ELSE locked_until END
    WHERE id = p_user
-  RETURNING locked_until
+  RETURNING locked_until INTO v_until;
+  PERFORM set_config('app.auth_lookup', '', true);
+  RETURN v_until;
+END
 $$;
 
--- Refresh flow: the client only holds the opaque refresh token, so the session (and from it
--- the company) is found by token hash before any tenant context exists.
+-- Refresh flow: the client holds only the opaque refresh token, so the session (and from it
+-- the company) is found by token hash before a tenant context exists. Returns only usable
+-- sessions, never revoked or expired ones.
 CREATE FUNCTION auth_find_session(p_token_hash text)
-  RETURNS TABLE (id uuid, company_id uuid, user_id uuid, expires_at timestamptz,
-                 revoked_at timestamptz, last_seen_at timestamptz)
-  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS
+  RETURNS TABLE (id uuid, company_id uuid, user_id uuid, expires_at timestamptz, last_seen_at timestamptz)
+  LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS
 $$
-  SELECT s.id, s.company_id, s.user_id, s.expires_at, s.revoked_at, s.last_seen_at
-  FROM session s WHERE s.refresh_token_hash = p_token_hash
+BEGIN
+  PERFORM set_config('app.auth_lookup', 'on', true);
+  RETURN QUERY
+    SELECT s.id, s.company_id, s.user_id, s.expires_at, s.last_seen_at
+    FROM session s
+    WHERE s.refresh_token_hash = p_token_hash AND s.revoked_at IS NULL AND s.expires_at > now();
+  PERFORM set_config('app.auth_lookup', '', true);
+END
 $$;
 
 REVOKE ALL ON FUNCTION auth_find_user(citext), auth_record_failure(uuid), auth_find_session(text) FROM PUBLIC;
@@ -486,18 +514,18 @@ BEGIN
                            'journal_line']
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
-    -- FORCE also applies RLS to the table owner. app_user and session are left unforced so the
-    -- SECURITY DEFINER auth functions (owned by the migration role) can find a user by email or
-    -- a session by token hash before a company context exists. csd_app is never the owner, so
-    -- RLS still binds it on every table.
-    IF t NOT IN ('app_user', 'session') THEN
-      EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
-    END IF;
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
     EXECUTE format(
       'CREATE POLICY company_isolation ON %I USING (company_id = app_company_id()) '
       'WITH CHECK (company_id = app_company_id())', t);
   END LOOP;
 END $$;
+
+CREATE POLICY auth_lookup ON app_user TO CURRENT_USER
+  USING (current_setting('app.auth_lookup', true) = 'on')
+  WITH CHECK (current_setting('app.auth_lookup', true) = 'on');
+CREATE POLICY auth_lookup ON session FOR SELECT TO CURRENT_USER
+  USING (current_setting('app.auth_lookup', true) = 'on');
 
 ALTER TABLE company ENABLE ROW LEVEL SECURITY;
 ALTER TABLE company FORCE ROW LEVEL SECURITY;

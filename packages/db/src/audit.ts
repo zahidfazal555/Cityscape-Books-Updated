@@ -1,6 +1,6 @@
 import { mapPlainDeep } from '@csd/core';
 import type pg from 'pg';
-import type { TenantContext } from './tx.js';
+import { withTenant, type TenantContext } from './tx.js';
 
 export interface AuditEntry {
   action: string;
@@ -45,19 +45,5 @@ export async function writeAuditDetached(
   ctx: TenantContext,
   entry: AuditEntry,
 ): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(
-      `SELECT set_config('app.company_id', $1, true), set_config('app.user_id', $2, true)`,
-      [ctx.companyId, ctx.userId ?? ''],
-    );
-    await writeAudit(client, entry);
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
-  }
+  await withTenant(pool, ctx, (client) => writeAudit(client, entry));
 }
