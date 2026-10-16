@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   ACCOUNT_FOR_MODE,
   DomainError,
+  assertApprover,
   PAYMENT_MODES,
   assertId,
   assertNotLocked,
@@ -147,12 +148,15 @@ export class VendorPaymentsService {
 
   /** The owner's queue (Approvals → Payments). */
   async pending(actor: Actor): Promise<VendorPayment[]> {
-    authorize(actor, 'approvals', 'full');
+    assertApprover(actor);
     return withTenant(this.pool, ctx(actor), async (c) => {
+      // BUG-099: the queue follows the approver's project scope, like approve() does.
       const { rows } = await c.query<Row>(
-        `${SELECT} AND v.status = 'pending' ORDER BY v.created_at`,
+        `${SELECT} AND v.status = 'pending' AND ($1::uuid[] IS NULL OR v.project_id = ANY($1::uuid[]))
+         ORDER BY v.created_at`,
+        [projectScope(actor)],
       );
-      return rows.map(toPayment);
+      return rows.filter((r) => can(actor, 'bills', 'view', r.project_id)).map(toPayment);
     });
   }
 
@@ -223,10 +227,10 @@ export class VendorPaymentsService {
     });
   }
 
-  /** The owner approves a pending payment; it posts, dated its payment date. */
+  /** The Owner approves a pending payment; it posts, dated its payment date (open period only). */
   async approve(actor: Actor, id: string): Promise<void> {
     assertId(id, 'Payment');
-    authorize(actor, 'approvals', 'full');
+    assertApprover(actor);
     await withTenant(this.pool, ctx(actor), async (c) => {
       const pay = await this.pendingFor(c, actor, id);
       const bill = await loadBill(c, actor, pay.billId, true);
@@ -248,7 +252,7 @@ export class VendorPaymentsService {
   async reject(actor: Actor, id: string, input: z.input<typeof rejectSchema>): Promise<void> {
     assertId(id, 'Payment');
     const data = parse(rejectSchema, input);
-    authorize(actor, 'approvals', 'full');
+    assertApprover(actor);
     await withTenant(this.pool, ctx(actor), async (c) => {
       await this.pendingFor(c, actor, id);
       await c.query(
@@ -266,8 +270,8 @@ export class VendorPaymentsService {
   }
 
   /**
-   * Deletes a payment (`bills = full`, open period). An approved one is reversed; a pending one
-   * may also be withdrawn by whoever entered it.
+   * Withdraws a pending payment (its author, or `bills = full`) or, for the Owner only, reverses an
+   * approved one in an open period. A pending one can be withdrawn even after its month is locked.
    */
   async remove(actor: Actor, id: string): Promise<void> {
     assertId(id, 'Payment');
@@ -276,6 +280,10 @@ export class VendorPaymentsService {
       const pay = await this.lockPayment(c, actor, id);
       const own = pay.status === 'pending' && pay.createdBy === actor.userId;
       if (!own) authorize(actor, 'bills', 'full', pay.projectId);
+      // BUG-100 (H2): reversing a posted payment moves money in the books; only the Owner does it.
+      if (pay.status === 'approved' && requiresApproval(actor)) {
+        throw new DomainError('FORBIDDEN', 'Only the owner can delete an approved payment.');
+      }
       if (pay.status === 'rejected')
         throw new DomainError(
           'CONFLICT',

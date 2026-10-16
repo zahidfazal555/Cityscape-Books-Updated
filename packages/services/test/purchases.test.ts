@@ -410,3 +410,153 @@ describe('purchase orders (FR-9)', () => {
     });
   });
 });
+
+describe('review regressions (PR 9)', () => {
+  it('BUG-098/100: approvals = full does not make a non-owner an approver; only the Owner reverses a posted payment', async () => {
+    const { projectId } = await clientProject(owner);
+    const { id: billId } = await bills.create(owner, billInput(await vendor(), projectId));
+    const base = actorFor(f, await makeUser(f.companyId, 'admin'), 'admin');
+    const admin: Actor = { ...base, rights: { ...base.rights, approvals: 'full' } };
+    const pay = await payments.record(admin, {
+      billId,
+      payDate: '2026-10-07',
+      amount: 1_000_00,
+      mode: 'cash',
+    });
+    expect(pay.status).toBe('pending');
+    await expect(payments.approve(admin, pay.id)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(payments.pending(admin)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await payments.approve(owner, pay.id);
+    // Admin holds bills = full, but reversing a posted payment is the Owner's call.
+    await expect(payments.remove(admin, pay.id)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await payments.remove(owner, pay.id);
+  });
+
+  it('BUG-099: only the Owner (all projects) reads the approval queue; a scoped user with approvals = full cannot', async () => {
+    const { projectId } = await clientProject(owner);
+    const { id: billId } = await bills.create(owner, billInput(await vendor(), projectId));
+    const pay = await payments.record(manager, {
+      billId,
+      payDate: '2026-10-07',
+      amount: 1_000_00,
+      mode: 'cash',
+    });
+    const scoped: Actor = {
+      ...manager,
+      projects: [],
+      rights: { ...manager.rights, approvals: 'full' },
+    };
+    await expect(payments.pending(scoped)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect((await payments.pending(owner)).map((p) => p.id)).toContain(pay.id);
+  });
+
+  it('BUG-101: editing a bill keeps its GSTIN snapshot even if the vendor master changes or is archived', async () => {
+    const { projectId } = await clientProject(owner);
+    const v = await vendor('33');
+    const { id } = await bills.create(owner, billInput(v, projectId));
+    await superPool.query(`UPDATE contact SET gstin = NULL, deleted_at = now() WHERE id = $1`, [v]);
+    const b = await bills.get(owner, id);
+    await bills.update(owner, id, {
+      ...billInput(v, projectId, { billNo: b.billNo, notes: 'Corrected note' }),
+      version: b.version,
+    });
+    expect(await postings(id)).toEqual({
+      '5000': 1_00_000_00,
+      '1200': 9_000_00,
+      '1201': 9_000_00,
+      '2000': -1_18_000_00,
+    });
+    expect((await bills.get(owner, id)).vendorGstin).toBe(b.vendorGstin);
+  });
+
+  it('BUG-102: a bill cannot be re-dated after its first payment', async () => {
+    const { projectId } = await clientProject(owner);
+    const v = await vendor();
+    const { id } = await bills.create(owner, billInput(v, projectId, { billDate: '2026-10-01' }));
+    await payments.record(manager, {
+      billId: id,
+      payDate: '2026-10-02',
+      amount: 1_000_00,
+      mode: 'cash',
+    });
+    const b = await bills.get(owner, id);
+    await expect(
+      bills.update(owner, id, {
+        ...billInput(v, projectId, { billNo: b.billNo, billDate: '2026-10-10' }),
+        version: b.version,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION', field: 'billDate' });
+  });
+
+  it('BUG-103: a pending payment in a now-locked month can still be rejected or withdrawn, but not approved', async () => {
+    const { projectId } = await clientProject(owner);
+    const { id: billId } = await bills.create(
+      owner,
+      billInput(await vendor(), projectId, { billDate: '2026-10-01' }),
+    );
+    const a = await payments.record(manager, {
+      billId,
+      payDate: '2026-10-02',
+      amount: 1_000_00,
+      mode: 'cash',
+    });
+    const b = await payments.record(manager, {
+      billId,
+      payDate: '2026-10-02',
+      amount: 1_000_00,
+      mode: 'cash',
+    });
+    await setLock(f.companyId, '2026-10-03');
+    await expect(payments.approve(owner, a.id)).rejects.toMatchObject({ code: 'PERIOD_LOCKED' });
+    await payments.reject(owner, a.id, { reason: 'Month closed' });
+    await payments.remove(manager, b.id);
+    expect((await bills.get(owner, billId)).pending).toBe(0);
+    // Any other change to a locked payment row stays blocked.
+    await expect(
+      superPool.query(`UPDATE vendor_payment SET reference = 'x' WHERE id = $1`, [a.id]),
+    ).rejects.toMatchObject({ code: 'CB423' });
+  });
+
+  it('locked periods: an approved payment or a bill in a locked month cannot be deleted', async () => {
+    const { projectId } = await clientProject(owner);
+    const { id: billId } = await bills.create(
+      owner,
+      billInput(await vendor(), projectId, { billDate: '2026-10-01' }),
+    );
+    const pay = await payments.record(owner, {
+      billId,
+      payDate: '2026-10-02',
+      amount: 1_000_00,
+      mode: 'cash',
+    });
+    const other = await bills.create(
+      owner,
+      billInput(await vendor(), projectId, { billDate: '2026-10-01' }),
+    );
+    await setLock(f.companyId, '2026-10-03');
+    await expect(payments.remove(owner, pay.id)).rejects.toMatchObject({ code: 'PERIOD_LOCKED' });
+    await expect(bills.remove(owner, other.id)).rejects.toMatchObject({ code: 'PERIOD_LOCKED' });
+  });
+
+  it('PO state machine: only drafts are edited or issued; no bills against cancelled POs', async () => {
+    const { projectId } = await clientProject(owner);
+    const v = await vendor();
+    const line = { description: 'Cement', qtyMilli: 10_000, unit: 'bag', rate: 400_00 };
+    const po = await pos.create(owner, {
+      vendorId: v,
+      projectId,
+      poDate: '2026-10-01',
+      lines: [line],
+    });
+    await pos.issue(owner, po.id);
+    await expect(pos.issue(owner, po.id)).rejects.toMatchObject({ code: 'CONFLICT' });
+    const view = await pos.get(owner, po.id);
+    await expect(
+      pos.update(owner, po.id, { poDate: '2026-10-01', lines: [line], version: view.version }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+    await pos.cancel(owner, po.id);
+    await expect(
+      bills.create(owner, billInput(v, projectId, { purchaseOrderId: po.id })),
+    ).rejects.toMatchObject({ code: 'VALIDATION', field: 'purchaseOrderId' });
+  });
+});

@@ -151,8 +151,26 @@ CREATE TABLE vendor_payment (
 );
 CREATE INDEX vendor_payment_bill ON vendor_payment (bill_id);
 CREATE INDEX vendor_payment_pending ON vendor_payment (company_id) WHERE status = 'pending' AND deleted_at IS NULL;
+-- Like document_lock_guard, except that a payment which never posted (pending → rejected, or a
+-- pending one withdrawn) may still be closed after its month is locked: it changes no books,
+-- and otherwise it would hold the bill's balance for ever.
+CREATE FUNCTION vendor_payment_lock_guard() RETURNS trigger
+  LANGUAGE plpgsql AS
+$$
+BEGIN
+  IF TG_OP = 'UPDATE' AND OLD.status = 'pending' AND NEW.status IN ('pending', 'rejected')
+     AND NEW.journal_id IS NULL AND NEW.reversal_journal_id IS NULL
+     AND (to_jsonb(NEW) - ARRAY['status', 'decided_by', 'decided_at', 'reject_reason', 'deleted_at', 'deleted_by'])
+       = (to_jsonb(OLD) - ARRAY['status', 'decided_by', 'decided_at', 'reject_reason', 'deleted_at', 'deleted_by']) THEN
+    RETURN NEW;
+  END IF;
+  IF TG_OP IN ('UPDATE', 'DELETE') THEN PERFORM assert_not_locked(OLD.company_id, OLD.pay_date); END IF;
+  IF TG_OP IN ('INSERT', 'UPDATE') THEN PERFORM assert_not_locked(NEW.company_id, NEW.pay_date); END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END
+$$;
 CREATE TRIGGER vendor_payment_lock BEFORE INSERT OR UPDATE OR DELETE ON vendor_payment
-  FOR EACH ROW EXECUTE FUNCTION document_lock_guard('pay_date');
+  FOR EACH ROW EXECUTE FUNCTION vendor_payment_lock_guard();
 CREATE TRIGGER vendor_payment_no_delete BEFORE DELETE ON vendor_payment
   FOR EACH ROW EXECUTE FUNCTION refuse_change();
 

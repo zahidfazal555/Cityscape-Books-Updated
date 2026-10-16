@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   DomainError,
+  assertApprover,
   assertId,
   authorize,
   can,
@@ -308,7 +309,7 @@ export class QuotationsService {
   /** ENGINEERING-STANDARDS H2: the owner (approvals = full) approves a discount before sending. */
   async approveDiscount(actor: Actor, id: string): Promise<void> {
     assertId(id, 'Quotation');
-    authorize(actor, 'approvals', 'full');
+    assertApprover(actor);
     await this.transition(actor, id, 'approve_discount', (q) => {
       if (q.status !== 'draft' || q.discountApproved)
         throw new DomainError('CONFLICT', 'This quotation has no discount waiting for approval.');

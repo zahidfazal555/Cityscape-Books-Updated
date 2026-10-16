@@ -281,9 +281,12 @@ export class BillsService {
       const company = await companyRow(c);
       assertNotLocked(before.billDate, company.lock_date, 'billDate');
       assertNotLocked(data.billDate, company.lock_date, 'billDate');
-      const vendor = await vendorParty(c, before.vendorId);
+      // BUG-101: a tax document keeps the vendor GSTIN it was entered with; later edits to the
+      // contact (or archiving it) never change this bill's GST.
+      const vendor = snapshotParty(before, company.state_code);
       const dueDate = data.dueDate ?? (await defaultDue(c, before.vendorId, data.billDate));
       assertDue(data.billDate, dueDate);
+      await assertBeforePayments(c, id, data.billDate);
       const t = billTotals(data, vendor, company.state_code);
       if (t.totals.total < before.paid + before.pending) {
         throw new DomainError(
@@ -302,7 +305,7 @@ export class BillsService {
         txnDate: data.billDate,
         sourceType: 'bill',
         sourceId: id,
-        narration: `Bill ${data.billNo} from ${vendor.name} (edited)`,
+        narration: `Bill ${data.billNo} from ${before.vendorName} (edited)`,
         lines: billJournalLines(t, data.category, before.vendorId, before.projectId),
       });
       await c
@@ -324,7 +327,7 @@ export class BillsService {
             ...money(t.totals),
             data.notes ?? null,
             journalId,
-            vendor.gstin,
+            before.vendorGstin,
           ],
         )
         .catch(onDuplicate('billNo', 'This vendor bill number is already entered.'));
@@ -469,6 +472,36 @@ export function billJournalLines(
 
 function money(t: DocumentTotals): string[] {
   return [t.taxable, t.cgst, t.sgst, t.igst, t.roundOff, t.total].map(toDecimalString);
+}
+
+/** The bill's own GSTIN snapshot and supply type, as stored when it was entered. */
+function snapshotParty(
+  bill: Pick<BillDetail, 'vendorGstin' | 'interState'>,
+  companyState: string,
+): { gstin: string | null; state_code: string } {
+  if (!bill.vendorGstin) return { gstin: null, state_code: companyState };
+  return { gstin: bill.vendorGstin, state_code: bill.vendorGstin.slice(0, 2) };
+}
+
+/** BUG-102: a bill cannot be re-dated after a payment already made (or pending) against it. */
+async function assertBeforePayments(
+  c: pg.PoolClient,
+  billId: string,
+  billDate: IsoDate,
+): Promise<void> {
+  const { rows } = await c.query<{ first: string | null }>(
+    `SELECT to_char(min(pay_date), 'YYYY-MM-DD') AS first FROM vendor_payment
+      WHERE bill_id = $1 AND deleted_at IS NULL AND status <> 'rejected'`,
+    [billId],
+  );
+  const first = rows[0]?.first;
+  if (first && billDate > first) {
+    throw new DomainError(
+      'VALIDATION',
+      `The bill date cannot be after its first payment (${first}).`,
+      'billDate',
+    );
+  }
 }
 
 async function assertPo(

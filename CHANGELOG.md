@@ -9,3 +9,9 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
   conversion to tax invoices, and release of advances when a converted invoice is cancelled.
 - Sales screens: quotations, proformas, tax invoices and client receipts, with printable A4 documents,
   live GST totals, CSV export of invoices and customer advances on the project page.
+- Purchases: purchase orders, purchase bills with input-credit rules, and vendor payments with
+  TDS; every non-owner payment waits for the Owner's approval.
+
+### Changed
+- H2 approvals are keyed to the Owner role: granting `approvals = full` to another user no longer
+  lets their entries post directly or lets them approve.
