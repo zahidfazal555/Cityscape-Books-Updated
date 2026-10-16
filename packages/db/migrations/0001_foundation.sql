@@ -90,6 +90,29 @@ CREATE UNIQUE INDEX app_user_one_owner ON app_user (company_id) WHERE role = 'ow
 ALTER TABLE app_user ADD CONSTRAINT owner_always_active CHECK (role <> 'owner' OR is_active);
 CREATE TRIGGER app_user_touch BEFORE UPDATE ON app_user FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 
+-- The owner can't be demoted, moved to another company or deleted (Tech Spec §5).
+CREATE FUNCTION protect_owner() RETURNS trigger
+  LANGUAGE plpgsql AS
+$$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF OLD.role = 'owner' THEN
+      RAISE EXCEPTION 'The owner account cannot be deleted' USING ERRCODE = 'CB409';
+    END IF;
+    RETURN OLD;
+  END IF;
+  IF (OLD.role = 'owner') <> (NEW.role = 'owner') THEN
+    RAISE EXCEPTION 'The owner role cannot be changed' USING ERRCODE = 'CB409';
+  END IF;
+  IF OLD.company_id <> NEW.company_id THEN
+    RAISE EXCEPTION 'A user cannot move between companies' USING ERRCODE = 'CB409';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER app_user_protect_owner BEFORE UPDATE OR DELETE ON app_user
+  FOR EACH ROW EXECUTE FUNCTION protect_owner();
+
 CREATE TABLE user_permission (
   company_id uuid NOT NULL,
   user_id    uuid NOT NULL,
@@ -318,6 +341,7 @@ CREATE TABLE journal (
   reverses_journal_id uuid,
   posted_at           timestamptz NOT NULL DEFAULT now(),
   posted_by           uuid,
+  posted_txid         xid8 NOT NULL DEFAULT pg_current_xact_id(),  -- lines may be added only in this transaction
   UNIQUE (company_id, id),
   FOREIGN KEY (company_id, reverses_journal_id) REFERENCES journal (company_id, id)
 );
@@ -376,12 +400,7 @@ CREATE FUNCTION journal_check_balanced() RETURNS trigger
 $$
 DECLARE v_dr numeric; v_cr numeric; v_n integer; v_id uuid;
 BEGIN
-  -- Separate branches: PL/pgSQL resolves every NEW.<field> in an expression, even unused ones.
-  IF TG_TABLE_NAME = 'journal' THEN
-    v_id := NEW.id;
-  ELSE
-    v_id := NEW.journal_id;
-  END IF;
+  v_id := NEW.id;
   SELECT coalesce(sum(debit), 0), coalesce(sum(credit), 0), count(*)
     INTO v_dr, v_cr, v_n
     FROM journal_line WHERE journal_id = v_id;
@@ -395,8 +414,24 @@ $$;
 
 CREATE CONSTRAINT TRIGGER journal_balanced AFTER INSERT ON journal
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION journal_check_balanced();
-CREATE CONSTRAINT TRIGGER journal_line_balanced AFTER INSERT ON journal_line
-  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION journal_check_balanced();
+
+-- Lines can be added only by the transaction that created the journal. A posted journal can't
+-- gain lines later, so it stays immutable and stays covered by the lock-date check made when
+-- the journal was inserted. That also means the balance check runs once per journal.
+CREATE FUNCTION journal_line_same_txn() RETURNS trigger
+  LANGUAGE plpgsql AS
+$$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM journal j
+                  WHERE j.id = NEW.journal_id AND j.posted_txid = pg_current_xact_id()) THEN
+    RAISE EXCEPTION 'Lines can only be added while the journal is being posted' USING ERRCODE = 'CB409';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER journal_line_posting_only BEFORE INSERT ON journal_line
+  FOR EACH ROW EXECUTE FUNCTION journal_line_same_txn();
 
 -- ---------------------------------------------------------------------------------------------
 -- Login lookup: runs before a company context exists, so it bypasses RLS in a controlled way
@@ -425,8 +460,19 @@ $$
   RETURNING locked_until
 $$;
 
-REVOKE ALL ON FUNCTION auth_find_user(citext), auth_record_failure(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION auth_find_user(citext), auth_record_failure(uuid) TO csd_app;
+-- Refresh flow: the client only holds the opaque refresh token, so the session (and from it
+-- the company) is found by token hash before any tenant context exists.
+CREATE FUNCTION auth_find_session(p_token_hash text)
+  RETURNS TABLE (id uuid, company_id uuid, user_id uuid, expires_at timestamptz,
+                 revoked_at timestamptz, last_seen_at timestamptz)
+  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS
+$$
+  SELECT s.id, s.company_id, s.user_id, s.expires_at, s.revoked_at, s.last_seen_at
+  FROM session s WHERE s.refresh_token_hash = p_token_hash
+$$;
+
+REVOKE ALL ON FUNCTION auth_find_user(citext), auth_record_failure(uuid), auth_find_session(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION auth_find_user(citext), auth_record_failure(uuid), auth_find_session(text) TO csd_app;
 
 -- ---------------------------------------------------------------------------------------------
 -- Row-level security on every company-owned table
@@ -440,10 +486,11 @@ BEGIN
                            'journal_line']
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
-    -- FORCE also applies RLS to the table owner. app_user is left unforced so the two
-    -- SECURITY DEFINER auth functions (owned by the migration role) can find a user by email
-    -- before a company context exists. csd_app is never the owner, so RLS still binds it.
-    IF t <> 'app_user' THEN
+    -- FORCE also applies RLS to the table owner. app_user and session are left unforced so the
+    -- SECURITY DEFINER auth functions (owned by the migration role) can find a user by email or
+    -- a session by token hash before a company context exists. csd_app is never the owner, so
+    -- RLS still binds it on every table.
+    IF t NOT IN ('app_user', 'session') THEN
       EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
     END IF;
     EXECUTE format(
@@ -462,7 +509,9 @@ CREATE POLICY company_isolation ON company USING (id = app_company_id()) WITH CH
 
 GRANT USAGE ON SCHEMA public TO csd_app;
 GRANT SELECT, UPDATE ON company TO csd_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON app_user, user_permission, session, contact, project,
+-- Users are deactivated, never deleted: their records and audit entries stay (Tech Spec §5).
+GRANT SELECT, INSERT, UPDATE ON app_user TO csd_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON user_permission, session, contact, project,
   user_project, account TO csd_app;
 GRANT SELECT, INSERT, UPDATE ON number_series TO csd_app;
 GRANT SELECT, INSERT ON audit_log, journal, journal_line TO csd_app;

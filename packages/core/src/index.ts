@@ -6,3 +6,4 @@ export * from './gstin.js';
 export * from './gst.js';
 export * from './permissions.js';
 export * from './numbering.js';
+export * from './objects.js';

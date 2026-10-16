@@ -40,6 +40,7 @@ export async function withTenant<T>(
     throw new DomainError('FORBIDDEN', 'Invalid session.');
   }
   const client = await pool.connect();
+  let broken: Error | undefined;
   try {
     await client.query('BEGIN');
     await client.query(
@@ -50,9 +51,12 @@ export async function withTenant<T>(
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined);
+    await client.query('ROLLBACK').catch((rollbackError: unknown) => {
+      // A failed ROLLBACK means the connection is unusable: destroy it, don't pool it.
+      broken = rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+    });
     throw mapDbError(error);
   } finally {
-    client.release();
+    client.release(broken);
   }
 }

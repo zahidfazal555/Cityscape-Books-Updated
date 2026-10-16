@@ -1,4 +1,5 @@
 import { DomainError } from './errors.js';
+import { mapPlainDeep } from './objects.js';
 
 export const LEVELS = ['none', 'view', 'edit', 'full'] as const;
 export type Level = (typeof LEVELS)[number];
@@ -183,16 +184,5 @@ const PNL_FIELDS = new Set(['profit', 'margin', 'net', 'netValue', 'profitSoFar'
  */
 export function stripPnl<T>(actor: Actor, value: T): T {
   if (can(actor, 'pnl', 'view')) return value;
-  const walk = (v: unknown): unknown => {
-    if (Array.isArray(v)) return v.map(walk);
-    if (v !== null && typeof v === 'object') {
-      return Object.fromEntries(
-        Object.entries(v)
-          .filter(([k]) => !PNL_FIELDS.has(k))
-          .map(([k, x]) => [k, walk(x)]),
-      );
-    }
-    return v;
-  };
-  return walk(value) as T;
+  return mapPlainDeep(value, (k, v) => (PNL_FIELDS.has(k) ? null : [k, v])) as T;
 }

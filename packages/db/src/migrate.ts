@@ -13,6 +13,8 @@ export async function migrate(connectionString: string): Promise<string[]> {
   const client = new pg.Client({ connectionString });
   await client.connect();
   try {
+    // Serialise concurrent deploys: a second runner waits here, then sees the files as applied.
+    await client.query(`SELECT pg_advisory_lock(hashtext('cityscape-books:migrate'))`);
     await client.query(
       `CREATE TABLE IF NOT EXISTS schema_migrations (
          name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,

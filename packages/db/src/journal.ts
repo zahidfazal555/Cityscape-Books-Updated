@@ -45,10 +45,11 @@ async function insertLine(
   client: pg.PoolClient,
   journalId: string,
   line: JournalLineInput,
+  allowInactive: boolean,
 ): Promise<void> {
   const res = await client.query(
     `INSERT INTO journal_line (company_id, journal_id, account_id, project_id, contact_id, debit, credit)
-     SELECT app_company_id(), $1, a.id, $3, $4, $5, $6 FROM account a WHERE a.code = $2 AND a.is_active`,
+     SELECT app_company_id(), $1, a.id, $3, $4, $5, $6 FROM account a WHERE a.code = $2 AND (a.is_active OR $7)`,
     [
       journalId,
       line.accountCode,
@@ -56,6 +57,7 @@ async function insertLine(
       line.contactId ?? null,
       toDecimalString(line.debit ?? 0),
       toDecimalString(line.credit ?? 0),
+      allowInactive,
     ],
   );
   if (res.rowCount !== 1) {
@@ -63,8 +65,19 @@ async function insertLine(
   }
 }
 
-/** Posts one balanced journal in the caller's transaction and returns its id. */
+/**
+ * Posts one balanced journal in the caller's transaction and returns its id. New postings must
+ * use active accounts; reversals may use accounts deactivated since the original was posted.
+ */
 export async function postJournal(client: pg.PoolClient, input: JournalInput): Promise<string> {
+  return insertJournal(client, input, false);
+}
+
+async function insertJournal(
+  client: pg.PoolClient,
+  input: JournalInput,
+  allowInactive: boolean,
+): Promise<string> {
   assertBalanced(input.lines);
   const { rows } = await client.query<{ id: string }>(
     `INSERT INTO journal (company_id, txn_date, source_type, source_id, narration, reverses_journal_id, posted_by)
@@ -79,7 +92,7 @@ export async function postJournal(client: pg.PoolClient, input: JournalInput): P
   );
   const journalId = rows[0]?.id;
   if (journalId === undefined) throw new Error('journal insert returned no id');
-  for (const line of input.lines) await insertLine(client, journalId, line);
+  for (const line of input.lines) await insertLine(client, journalId, line, allowInactive);
   return journalId;
 }
 
@@ -107,18 +120,22 @@ export async function reverseJournal(
        FROM journal_line l JOIN account a ON a.id = l.account_id WHERE l.journal_id = $1`,
     [journalId],
   );
-  return postJournal(client, {
-    txnDate,
-    sourceType: original.source_type,
-    sourceId: original.source_id,
-    narration,
-    reversesJournalId: journalId,
-    lines: rows.map((r) => ({
-      accountCode: r.code,
-      projectId: r.project_id,
-      contactId: r.contact_id,
-      debit: fromDecimalString(r.credit),
-      credit: fromDecimalString(r.debit),
-    })),
-  });
+  return insertJournal(
+    client,
+    {
+      txnDate,
+      sourceType: original.source_type,
+      sourceId: original.source_id,
+      narration,
+      reversesJournalId: journalId,
+      lines: rows.map((r) => ({
+        accountCode: r.code,
+        projectId: r.project_id,
+        contactId: r.contact_id,
+        debit: fromDecimalString(r.credit),
+        credit: fromDecimalString(r.debit),
+      })),
+    },
+    true,
+  );
 }

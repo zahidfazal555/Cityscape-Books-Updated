@@ -1,4 +1,4 @@
-import { percentOf, type Paise } from './money.js';
+import { mulDivHalfUp, percentOf, toBasisPoints, type Paise } from './money.js';
 
 export const COMPANY_STATE_CODE = '33';
 export const DEFAULT_SAC = '9954';
@@ -34,6 +34,6 @@ export function splitTax(
  */
 export function taxInInclusive(amount: Paise, rate: number): Paise {
   if (rate === 0) return 0;
-  const basisPoints = Math.round(rate * 100);
-  return Math.round((amount * basisPoints) / (10_000 + basisPoints));
+  const basisPoints = toBasisPoints(rate);
+  return mulDivHalfUp(amount, basisPoints, 10_000 + basisPoints);
 }

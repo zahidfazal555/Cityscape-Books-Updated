@@ -43,10 +43,34 @@ export function roundHalfUp(value: number): number {
   return Math.sign(value) * Math.round(Math.abs(value));
 }
 
+/**
+ * `amount × numerator / denominator`, rounded half away from zero, in exact integer
+ * arithmetic (BigInt) so large amounts never lose precision.
+ */
+export function mulDivHalfUp(amount: Paise, numerator: number, denominator: number): Paise {
+  if (!Number.isSafeInteger(numerator) || !Number.isSafeInteger(denominator) || denominator <= 0) {
+    throw new RangeError('mulDivHalfUp needs integer numerator and positive integer denominator');
+  }
+  const product = BigInt(assertPaise(amount)) * BigInt(numerator);
+  const den = BigInt(denominator);
+  const abs = product < 0n ? -product : product;
+  const rounded = (abs * 2n + den) / (den * 2n);
+  const result = Number(product < 0n ? -rounded : rounded);
+  return assertPaise(result === 0 ? 0 : result); // never -0 (would print as −₹0)
+}
+
+/** Converts a percentage with up to 2 decimals (e.g. 9, 2.5, 0.75) to basis points. */
+export function toBasisPoints(percent: number): number {
+  const bp = Math.round(percent * 100);
+  if (!Number.isFinite(percent) || Math.abs(percent * 100 - bp) > 1e-6) {
+    throw new RangeError('Percentages may have at most 2 decimals');
+  }
+  return bp;
+}
+
 /** `amount × percent / 100`, rounded half-up to the paisa. `percent` may have up to 2 decimals. */
 export function percentOf(amount: Paise, percent: number): Paise {
-  const basisPoints = Math.round(percent * 100);
-  return assertPaise(roundHalfUp((amount * basisPoints) / 10_000));
+  return mulDivHalfUp(amount, toBasisPoints(percent), 10_000);
 }
 
 /** Document totals are rounded to the nearest rupee; the difference is posted as round-off. */
