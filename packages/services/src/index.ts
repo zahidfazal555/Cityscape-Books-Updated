@@ -5,3 +5,6 @@ export * from './mailer.js';
 export * from './passwords.js';
 export * from './settings.js';
 export * from './users.js';
+export * from './contacts.js';
+export * from './projects.js';
+export * from './validation.js';

@@ -14,6 +14,7 @@ import type pg from 'pg';
 import { z } from 'zod';
 import { revokeUserSessions, type AuthService } from './auth.js';
 import type { MailMessage } from './mailer.js';
+import { isUniqueViolation, parse } from './validation.js';
 
 /** Users & security is owner-only and cannot be granted (Tech Spec §5). */
 export function assertOwner(actor: Actor): void {
@@ -59,15 +60,6 @@ export interface UserRow {
   lastLoginAt: Date | null;
   accessExpiresAt: Date | null;
   invitePending: boolean;
-}
-
-function parse<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
-  const result = schema.safeParse(input);
-  if (!result.success) {
-    const issue = result.error.issues[0];
-    throw new DomainError('VALIDATION', issue?.message ?? 'Check the form.', issue?.path.join('.'));
-  }
-  return result.data;
 }
 
 interface Resolved {
@@ -339,10 +331,6 @@ const ctx = (actor: Actor): { companyId: string; userId: string } => ({
   companyId: actor.companyId,
   userId: actor.userId,
 });
-
-function isUniqueViolation(e: unknown): boolean {
-  return (e as { code?: string }).code === '23505';
-}
 
 async function getUser(
   c: pg.PoolClient,
