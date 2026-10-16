@@ -12,7 +12,7 @@ When this file and `SPEC-FIXES-v1.4.md` disagree, **this file wins**. Section 0 
 
 | # | Earlier decision | Handbook rule | New decision | Status |
 |---|---|---|---|---|
-| H1 | Email + password only, no MFA (client asked for "no SMS/OTP") | §1.2: MFA for privileged accounts | **Passkeys (WebAuthn)** are mandatory for Owner and Admin, and optional for everyone else. No SMS and no typed codes, so the client's "no OTP" wish still holds. Each privileged user registers 2 passkeys (phone + laptop). Recovery codes are printed once and kept in the office safe. | **CONFIRM with owner** |
+| H1 | Email + password only, no MFA (client asked for "no SMS/OTP") | §1.2: MFA for privileged accounts | **No MFA of any kind, passkeys included** (owner decision 16 Oct 2026). Accepted risk, compensated by: 12-char minimum + breached-password check, 5-failure lockout, owner notified in-app of every Owner/Admin sign-in from a new device or IP, 30-min idle timeout, quarterly access review. Reviewed every 6 months. | FIXED, accepted risk |
 | H2 | C1: payroll, wage, contractor and vendor payments post without approval | §7.4: supplier payments and salary changes need authorisation limits | **No threshold: everything is approved.** Every vendor payment, contractor payment, daily-wage payment, payroll run, salary/daily-rate change and quotation discount entered by a non-owner is saved as *Pending* and posts nothing until the Owner approves it. Owner entries post directly. Approvals screen gets tabs: Expenses · Payments · Payroll · Rate changes · Discounts. | FIXED (owner decision 16 Oct 2026) |
 | H3 | No auditor role | §7.2: Auditor = read-only | New role **`auditor`** (the company's CA). View on every finance module, including `pnl` and the audit log. No edit rights anywhere. Access has an expiry date. | FIXED |
 | H4 | Audit log covers writes | §7.3: sensitive exports | Every CSV/XLSX/PDF export, GSTR-1 JSON download, payslip view and bill-photo view also writes an audit row. | FIXED |
@@ -37,7 +37,7 @@ When this file and `SPEC-FIXES-v1.4.md` disagree, **this file wins**. Section 0 
 | Area | Control | Verified by |
 |---|---|---|
 | Passwords | argon2id (m=64 MB, t=3, p=1), min 12 chars, checked against HIBP k-anonymity | unit test |
-| MFA | Passkeys for Owner and Admin (H1) | e2e |
+| MFA | None (accepted risk H1); new-device sign-in alert for Owner/Admin instead | integration |
 | Sessions | 15-min access JWT, rotating refresh token in an httpOnly / Secure / SameSite=Strict cookie, 30-min idle timeout, all sessions revoked on password or role change | integration |
 | Lockout and rate limits | 5 failures → 15-min lock + owner notified; login 10/min per IP; API 300/min per user | integration |
 | Authorisation | One `can(user, module, level, projectId?)` in `packages/core`. Every route handler is wrapped in `withAuth(module, level)`, and a **lint rule fails the build** if a route is exported without it | unit + permission-matrix e2e |
