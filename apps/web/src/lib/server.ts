@@ -7,8 +7,11 @@ import {
   HibpBreachChecker,
   IdempotencyService,
   InvoicesService,
+  BillsService,
   ProformasService,
+  PurchaseOrdersService,
   QuotationsService,
+  VendorPaymentsService,
   MemoryMailer,
   ProjectsService,
   ReceiptsService,
@@ -29,6 +32,9 @@ export interface Services {
   audit: AuditService;
   invoices: InvoicesService;
   quotations: QuotationsService;
+  purchaseOrders: PurchaseOrdersService;
+  bills: BillsService;
+  vendorPayments: VendorPaymentsService;
   proformas: ProformasService;
   idempotency: IdempotencyService;
   receipts: ReceiptsService;
@@ -67,6 +73,9 @@ export function services(): Services {
     audit: new AuditService(pool),
     invoices: new InvoicesService(pool),
     quotations: new QuotationsService(pool),
+    purchaseOrders: new PurchaseOrdersService(pool),
+    bills: new BillsService(pool),
+    vendorPayments: new VendorPaymentsService(pool),
     proformas: new ProformasService(pool),
     idempotency: new IdempotencyService(pool),
     receipts: new ReceiptsService(pool),

@@ -14,3 +14,6 @@ export * from './receipts.js';
 export * from './idempotency.js';
 export * from './quotations.js';
 export * from './proformas.js';
+export * from './purchase-orders.js';
+export * from './bills.js';
+export * from './vendor-payments.js';

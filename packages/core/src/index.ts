@@ -9,3 +9,4 @@ export * from './numbering.js';
 export * from './objects.js';
 export * from './ids.js';
 export * from './documents.js';
+export * from './categories.js';
