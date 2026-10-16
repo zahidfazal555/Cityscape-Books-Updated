@@ -115,6 +115,7 @@ export function apiUpload(
       route,
       async (ctx) => {
         const actor = await authenticated(req);
+        limits.upload.take(actor.userId);
         const declared = Number(req.headers.get('content-length') ?? '0');
         if (declared > MAX_UPLOAD_BYTES)
           throw new DomainError('TOO_LARGE', 'The file is larger than 10 MB.');

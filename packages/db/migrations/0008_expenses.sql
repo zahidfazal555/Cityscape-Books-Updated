@@ -69,13 +69,13 @@ CREATE UNIQUE INDEX expense_attachment ON expense (attachment_id) WHERE attachme
 CREATE TRIGGER expense_touch BEFORE UPDATE ON expense FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER expense_no_delete BEFORE DELETE ON expense FOR EACH ROW EXECUTE FUNCTION refuse_change();
 
--- Like vendor_payment_lock_guard (0007): an expense that never posted may still be rejected or
--- withdrawn after its month is locked; anything else needs the period open.
+-- Like vendor_payment_lock_guard (0007): an expense that never posted (pending or rejected) may
+-- still be rejected or withdrawn after its month is locked; anything else needs the period open.
 CREATE FUNCTION expense_lock_guard() RETURNS trigger
   LANGUAGE plpgsql AS
 $$
 BEGIN
-  IF TG_OP = 'UPDATE' AND OLD.status = 'pending' AND NEW.status IN ('pending', 'rejected')
+  IF TG_OP = 'UPDATE' AND OLD.status IN ('pending', 'rejected') AND NEW.status IN ('pending', 'rejected')
      AND NEW.journal_id IS NULL AND NEW.reversal_journal_id IS NULL
      AND (to_jsonb(NEW) - ARRAY['status', 'decided_by', 'decided_at', 'reject_reason', 'deleted_at',
                                 'deleted_by', 'updated_at', 'updated_by', 'version'])

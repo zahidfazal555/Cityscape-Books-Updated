@@ -66,5 +66,6 @@ Restore the latest nightly dump into staging, then run `pnpm verify:books` (tria
 ## Bill photos (attachments)
 - Stored outside the database under `ATTACHMENT_DIR` (required in production; the app refuses to start without it). Keys are `<company id>/<attachment id>`, created once and never overwritten; the `attachment` table holds type, size and SHA-256.
 - Back the directory up with the database, on the same schedule; a restore needs both. Verify a sample after restore by comparing SHA-256 with `attachment.sha256`.
-- Uploads are type-sniffed (JPEG, PNG, PDF only, ≤ 10 MB) and stripped of EXIF/GPS and text metadata before storage. Every view writes an audit row (H4).
+- Uploads are type-sniffed (JPEG, PNG, PDF only, ≤ 10 MB). JPEG and PNG are re-encoded from their pixels, which drops EXIF/GPS, comments, appended images and trailers. PDFs are stored as uploaded and always served as a download, never inline. Every view writes an audit row (H4).
+- Limits: 20 uploads per user per minute, and at most 20 photos per user waiting to be attached (last 7 days).
 - Moving to an S3-compatible bucket: implement `BlobStore` (`put`/`get`) for the bucket, copy the directory tree key-for-key, then switch the container in `apps/web/src/lib/server.ts`.

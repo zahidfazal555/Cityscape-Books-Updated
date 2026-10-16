@@ -1,3 +1,6 @@
+import { crc32 } from 'node:zlib';
+import jpeg from 'jpeg-js';
+import { PNG } from 'pngjs';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Actor } from '@csd/core';
 import {
@@ -37,28 +40,46 @@ const seg = (marker: number, body: string) => {
   head.writeUInt16BE(b.length + 2, 2);
   return Buffer.concat([head, b]);
 };
-/** A minimal JPEG with JFIF, an EXIF segment carrying "GPS" and a comment. */
+const pixels = (w: number, h: number) => {
+  const data = Buffer.alloc(w * h * 4);
+  for (let i = 0; i < data.length; i += 4) data.set([200, 120, 40, 255], i);
+  return { width: w, height: h, data };
+};
+const plain = jpeg.encode(pixels(16, 8), 90).data;
+/**
+ * A real JPEG as a phone writes it: EXIF with GPS and a comment up front, a second (MPF/gain
+ * map) image with its own EXIF appended after the first, and a Motion Photo trailer at the end.
+ */
 const JPEG = Buffer.concat([
-  Buffer.from([0xff, 0xd8]),
-  seg(0xe0, 'JFIF\0\x01\x01'),
+  plain.subarray(0, 2),
   seg(0xe1, 'Exif\0\0GPS 13.0827N 80.2707E'),
   seg(0xfe, 'secret comment'),
-  seg(0xdb, 'quant-table'),
-  Buffer.from([0xff, 0xda, 0x00, 0x04, 0x01, 0x02, 0x11, 0x22, 0xff, 0xd9]),
+  plain.subarray(2),
+  Buffer.from([0xff, 0xd8]),
+  seg(0xe1, 'Exif\0\0GPS second image'),
+  plain.subarray(2),
+  Buffer.from('ftypmp42 MotionPhoto GPS trailer', 'latin1'),
 ]);
 
-const chunk = (type: string, data: string) => {
+const pngChunk = (type: string, data: string) => {
+  const t = Buffer.from(type, 'latin1');
   const d = Buffer.from(data, 'latin1');
   const len = Buffer.alloc(4);
   len.writeUInt32BE(d.length);
-  return Buffer.concat([len, Buffer.from(type, 'latin1'), d, Buffer.alloc(4)]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([t, d])) >>> 0);
+  return Buffer.concat([len, t, d, crc]);
 };
-const PNG = Buffer.concat([
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-  chunk('IHDR', '0123456789abc'),
-  chunk('tEXt', 'GPS\0Chennai'),
-  chunk('IDAT', 'pixels'),
-  chunk('IEND', ''),
+const plainPng = (() => {
+  const img = new PNG({ width: 4, height: 4 });
+  img.data.fill(128);
+  return PNG.sync.write(img);
+})();
+/** A real PNG with a tEXt chunk inserted before IEND. */
+const PNG_WITH_TEXT = Buffer.concat([
+  plainPng.subarray(0, plainPng.length - 12),
+  pngChunk('tEXt', 'GPS\0Chennai'),
+  plainPng.subarray(plainPng.length - 12),
 ]);
 
 beforeAll(async () => {
@@ -105,22 +126,23 @@ async function postings(sourceId: string): Promise<Record<string, number>> {
 }
 
 describe('bill photos', () => {
-  it('sniffs the type and strips EXIF/GPS and comments from JPEGs and text chunks from PNGs', () => {
+  it('BUG-105: re-encodes images, dropping EXIF/GPS, comments, appended images and trailers', () => {
     const jpg = cleanUpload(JPEG);
     expect(jpg?.type).toBe('image/jpeg');
     const text = jpg!.bytes.toString('latin1');
-    expect(text).toContain('JFIF');
-    expect(text).not.toContain('GPS');
-    expect(text).not.toContain('secret comment');
-    expect(text).toContain('quant-table');
-    const png = cleanUpload(PNG);
+    for (const leak of ['GPS', 'Exif', 'secret comment', 'MotionPhoto'])
+      expect(text).not.toContain(leak);
+    // Exactly one image, and it still decodes to the same picture size.
+    expect(text.split('\xff\xd8').length - 1).toBe(1);
+    expect(jpeg.decode(jpg!.bytes)).toMatchObject({ width: 16, height: 8 });
+    const png = cleanUpload(PNG_WITH_TEXT);
     expect(png?.type).toBe('image/png');
     expect(png!.bytes.toString('latin1')).not.toContain('Chennai');
-    expect(png!.bytes.toString('latin1')).toContain('IDAT');
+    expect(PNG.sync.read(png!.bytes)).toMatchObject({ width: 4, height: 4 });
     expect(cleanUpload(Buffer.from('%PDF-1.7 hello'))?.type).toBe('application/pdf');
     expect(cleanUpload(Buffer.from('<svg onload=alert(1)>'))).toBeNull();
-    // A truncated JPEG is refused rather than stored half-cleaned.
-    expect(cleanUpload(JPEG.subarray(0, 12))).toBeNull();
+    // A file that only looks like a JPEG is refused rather than stored.
+    expect(cleanUpload(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 4, 1, 2]))).toBeNull();
   });
 
   it('upload refuses other types, empty and oversized files; stores the cleaned bytes', async () => {
@@ -204,22 +226,70 @@ describe('expenses (FR-11, H2)', () => {
     expect(view.rejectReason).toBeNull();
   });
 
-  it('editing a posted expense: a non-owner sends it back to Pending (reversed); the Owner reposts it', async () => {
-    const e = await expenses.create(owner, await input({}, owner));
+  it('BUG-104: a non-owner cannot edit (and so un-post or then withdraw) an approved expense; the Owner reposts it', async () => {
+    const e = await expenses.create(site, await input());
+    await expenses.approve(owner, e.id);
     let v = await expenses.get(owner, e.id);
-    const r1 = await expenses.update(manager, e.id, {
-      ...(await input({ amount: 3_000_00 }, manager)),
-      version: v.version,
-    });
-    expect(r1.status).toBe('pending');
-    expect(await postings(e.id)).toEqual({});
+    await expect(
+      expenses.update(site, e.id, { ...(await input()), version: v.version }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(expenses.remove(site, e.id)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(await postings(e.id)).toEqual({ '5000': 2_450_00, '1020': -2_450_00 });
     v = await expenses.get(owner, e.id);
-    const r2 = await expenses.update(owner, e.id, {
+    const r = await expenses.update(owner, e.id, {
       ...(await input({ amount: 3_100_00 }, owner)),
       version: v.version,
     });
-    expect(r2.status).toBe('approved');
+    expect(r.status).toBe('approved');
     expect(await postings(e.id)).toEqual({ '5000': 3_100_00, '1020': -3_100_00 });
+  });
+
+  it('BUG-109: the Owner can attach the author’s own unused photo; anyone else’s is refused', async () => {
+    const e = await expenses.create(site, await input());
+    const spare = await photo(site);
+    const v = await expenses.get(owner, e.id);
+    await expenses.update(owner, e.id, {
+      ...(await input({ attachmentId: spare }, owner)),
+      version: v.version,
+    });
+    expect((await expenses.get(owner, e.id)).attachmentId).toBe(spare);
+    const mgrPhoto = await photo(manager);
+    const v2 = await expenses.get(owner, e.id);
+    await expect(
+      expenses.update(owner, e.id, {
+        ...(await input({ attachmentId: mgrPhoto }, owner)),
+        version: v2.version,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION', field: 'attachmentId' });
+  });
+
+  it('BUG-108: visit expenses and imported rows do not need a photo; approval re-checks the project', async () => {
+    const e = await expenses.create(site, await input());
+    await superPool.query(
+      `UPDATE expense SET source = 'visit', attachment_id = NULL WHERE id = $1`,
+      [e.id],
+    );
+    const v = await expenses.get(site, e.id);
+    await expenses.update(site, e.id, {
+      ...(await input({ attachmentId: null })),
+      version: v.version,
+    });
+    const other = await clientProject(owner);
+    const scopedSite = actorFor(f, await makeUser(f.companyId, 'site'), 'site', [other.projectId]);
+    const p = await expenses.create(scopedSite, {
+      ...(await input({}, scopedSite)),
+      projectId: other.projectId,
+    });
+    await superPool.query(`UPDATE project SET status = 'cancelled' WHERE id = $1`, [
+      other.projectId,
+    ]);
+    await expect(expenses.approve(owner, p.id)).rejects.toMatchObject({ code: 'VALIDATION' });
+  });
+
+  it('BUG-106: a user can hold at most 20 unattached photos', async () => {
+    const uploader = actorFor(f, await makeUser(f.companyId, 'site'), 'site', [projectId]);
+    for (let i = 0; i < 20; i++) await files.upload(uploader, JPEG);
+    await expect(files.upload(uploader, JPEG)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
   });
 
   it('delete: authors withdraw their pending entries; only the Owner deletes a posted one; payment-created entries are read-only', async () => {
@@ -250,6 +320,8 @@ describe('expenses (FR-11, H2)', () => {
     await setLock(f.companyId, '2026-10-03');
     await expect(expenses.approve(owner, a.id)).rejects.toMatchObject({ code: 'PERIOD_LOCKED' });
     await expenses.reject(owner, a.id, { reason: 'Month closed' });
+    // Never posted: the rejected one can still be cleared away by its author.
+    await expenses.remove(site, a.id);
     await expenses.remove(site, b.id);
     await expect(expenses.remove(owner, posted.id)).rejects.toMatchObject({
       code: 'PERIOD_LOCKED',

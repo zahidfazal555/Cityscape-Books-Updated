@@ -2,14 +2,20 @@ import { expect, test } from '@playwright/test';
 import { withDb } from './db';
 import { PASSWORD, email } from './fixtures';
 
-/** A minimal JPEG whose EXIF segment carries a GPS string. */
-const JPEG = Buffer.concat([
-  Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x09]),
-  Buffer.from('JFIF\0\x01\x01', 'latin1'),
-  Buffer.from([0xff, 0xe1, 0x00, 0x0c]),
-  Buffer.from('Exif\0\0GPS!', 'latin1'),
-  Buffer.from([0xff, 0xda, 0x00, 0x04, 0x01, 0x02, 0x11, 0x22, 0xff, 0xd9]),
-]);
+/** A real 8×8 JPEG with an EXIF segment carrying a GPS string. */
+const JPEG = Buffer.from(
+  '/9j/4QAMRXhpZgAAR1BTIf/gABBKRklGAAEBAAABAAEAAP/bAIQABgQFBgUEBgYFBgcHBggKEAoKCQkKFA4PDBAXFB' +
+    'gYFxQWFhodJR8aGyMcFhYgLCAjJicpKikZHy0wLSgwJSgpKAEHBwcKCAoTCgoTKBoWGigoKCgoKCgoKCgoKCgoKCgo' +
+    'KCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo/8AAEQgACAAIAwERAAIRAQMRAf/EAaIAAAEFAQEBAQEBAA' +
+    'AAAAAAAAABAgMEBQYHCAkKCxAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAk' +
+    'M2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJ' +
+    'WWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6AQADAQEB' +
+    'AQEBAQEBAAAAAAAAAQIDBAUGBwgJCgsRAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQ' +
+    'kjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWG' +
+    'h4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v' +
+    '/aAAwDAQACEQMRAD8A9FoA/wD/2Q==',
+  'base64',
+);
 
 test('API: a manager uploads a bill photo and records an expense; it waits for the owner; the photo has no GPS', async ({
   page,

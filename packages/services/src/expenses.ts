@@ -30,6 +30,9 @@ export const EXPENSE_MODES = ['upi', 'cash', 'bank'] as const;
 export type ExpenseMode = (typeof EXPENSE_MODES)[number];
 export const EXPENSE_STATUSES = ['pending', 'approved', 'rejected'] as const;
 export type ExpenseStatus = (typeof EXPENSE_STATUSES)[number];
+/** CSV exports stop here rather than cutting rows silently. */
+export const EXPORT_MAX = 50_000;
+
 export type ExpenseSource = 'manual' | 'payroll_wage' | 'contract_payment' | 'visit';
 
 const fields = {
@@ -187,9 +190,15 @@ export class ExpensesService {
     authorize(actor, 'expenses', 'view');
     return withTenant(this.pool, ctx(actor), async (c) => {
       const { rows } = await c.query<Row>(
-        `${SELECT} ${FILTER} ORDER BY e.txn_date DESC, e.created_at DESC LIMIT 50000`,
+        `${SELECT} ${FILTER} ORDER BY e.txn_date DESC, e.created_at DESC LIMIT ${EXPORT_MAX + 1}`,
         params(actor, filter),
       );
+      if (rows.length > EXPORT_MAX) {
+        throw new DomainError(
+          'VALIDATION',
+          `More than ${EXPORT_MAX.toLocaleString('en-IN')} rows. Filter by project or status first.`,
+        );
+      }
       await writeAudit(c, {
         action: 'export',
         entity: 'expense',
@@ -266,9 +275,9 @@ export class ExpensesService {
   }
 
   /**
-   * FR-11.6: edits a manual expense in an open period. A posted one is reversed; it is reposted
-   * when the Owner edits it, otherwise it goes back to Pending (Tech Spec §5). A rejected one
-   * is resubmitted.
+   * FR-11.6: edits a manual expense in an open period. Only the Owner edits an approved one (it is
+   * reversed and reposted); others edit pending or rejected entries, which (re)submits them.
+   * `attachmentId`: omitted keeps the photo, null removes it (only where no photo is required).
    */
   async update(actor: Actor, id: string, input: ExpenseUpdate): Promise<{ status: ExpenseStatus }> {
     assertId(id, 'Expense');
@@ -280,6 +289,14 @@ export class ExpensesService {
       authorize(actor, 'expenses', 'edit', before.project_id);
       assertProject(actor, data.projectId);
       assertEditable(before, data.version);
+      // BUG-104 (H2): un-posting an approved entry is itself a change to the books; only the
+      // Owner corrects one. Others record a new entry or ask the Owner.
+      if (before.status === 'approved' && requiresApproval(actor)) {
+        throw new DomainError(
+          'FORBIDDEN',
+          'This expense is approved. Only the owner can change it.',
+        );
+      }
       const company = await companyRow(c);
       assertNotLocked(before.txn_date, company.lock_date, 'txnDate');
       assertNotLocked(data.txnDate, company.lock_date, 'txnDate');
@@ -305,7 +322,7 @@ export class ExpensesService {
           data.mode,
           data.paidTo ?? null,
           ACCOUNT_FOR_MODE[data.mode],
-          data.attachmentId ?? before.attachment_id,
+          data.attachmentId === undefined ? before.attachment_id : data.attachmentId,
           approved ? 'approved' : 'pending',
           approved,
           journalId,
@@ -335,7 +352,8 @@ export class ExpensesService {
       const e = await loadRow(c, actor, id, true);
       if (e.source !== 'manual' && e.source !== 'visit')
         throw new DomainError('CONFLICT', 'This entry was created by a payment; change it there.');
-      const own = e.status === 'pending' && e.created_by === actor.userId;
+      // Never-posted entries (pending or rejected) can be withdrawn by their author.
+      const own = e.status !== 'approved' && e.created_by === actor.userId;
       if (!own) authorize(actor, 'expenses', 'full', e.project_id);
       if (e.status === 'approved' && requiresApproval(actor))
         throw new DomainError('FORBIDDEN', 'Only the owner can delete an approved expense.');
@@ -376,8 +394,11 @@ export class ExpensesService {
         await withTenant(this.pool, ctx(actor), (c) => approveTx(c, actor, id));
         approved.push(id);
       } catch (e) {
-        if (!(e instanceof DomainError)) throw e;
-        failed.push({ id, message: e.message });
+        // Earlier ones are committed: always report, never fail the whole batch.
+        failed.push({
+          id,
+          message: e instanceof DomainError ? e.message : 'Could not approve this entry.',
+        });
       }
     }
     return { approved, failed };
@@ -406,7 +427,7 @@ export class ExpensesService {
   }
 }
 
-/** A moved project must be open; the photo rule applies (not to imported rows); a new photo is claimed. */
+/** A moved project must be open; the photo rule (B6) holds; a new photo is claimed. */
 async function checkEdit(
   c: pg.PoolClient,
   actor: Actor,
@@ -414,11 +435,14 @@ async function checkEdit(
   data: { projectId: string; attachmentId?: string | null | undefined },
 ): Promise<void> {
   if (data.projectId !== before.project_id) await assertLiveProject(c, data.projectId);
-  const photo = data.attachmentId ?? before.attachment_id;
-  if (!before.migrated) await assertPhoto(c, photo);
+  const photo = data.attachmentId === undefined ? before.attachment_id : data.attachmentId;
+  if (needsPhoto(before)) await assertPhoto(c, photo);
   if (data.attachmentId && data.attachmentId !== before.attachment_id)
-    await claimAttachment(c, actor, data.attachmentId, before.id);
+    await claimAttachment(c, actor, data.attachmentId, before.id, before.created_by);
 }
+
+/** B6: the photo rule applies to manual entries that were not imported from the old trackers. */
+const needsPhoto = (e: Pick<Row, 'source' | 'migrated'>) => e.source === 'manual' && !e.migrated;
 
 async function approveTx(c: pg.PoolClient, actor: Actor, id: string): Promise<void> {
   const e = await loadRow(c, actor, id, true);
@@ -426,6 +450,9 @@ async function approveTx(c: pg.PoolClient, actor: Actor, id: string): Promise<vo
     throw new DomainError('CONFLICT', `This expense is already ${e.status}.`);
   const company = await companyRow(c);
   assertNotLocked(e.txn_date, company.lock_date, 'txnDate');
+  // The project may have closed, or the photo rule changed, since it was entered.
+  await assertLiveProject(c, e.project_id);
+  if (needsPhoto(e)) await assertPhoto(c, e.attachment_id);
   const journalId = await postExpense(c, id, {
     projectId: e.project_id,
     txnDate: e.txn_date,

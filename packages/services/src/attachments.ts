@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { DomainError, assertId, authorize, can, type Actor } from '@csd/core';
+import { DomainError, assertId, authorize, can, canApprove, type Actor } from '@csd/core';
 import { withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import type { BlobStore } from './blob-store.js';
@@ -29,8 +29,10 @@ export class AttachmentsService {
       throw new DomainError('VALIDATION', 'Upload a photo (JPEG or PNG) or a PDF.', 'file');
     const id = randomUUID();
     const key = `${actor.companyId}/${id}`;
-    await this.store.put(key, clean.bytes);
+    // Row and file together: the file is written inside the transaction, so a failed insert
+    // leaves no file and a failed write leaves no row (BUG-106).
     await withTenant(this.pool, ctx(actor), async (c) => {
+      await assertUnclaimedQuota(c);
       await c.query(
         `INSERT INTO attachment (id, company_id, storage_key, content_type, size_bytes, sha256, uploaded_by)
          VALUES ($1, app_company_id(), $2, $3, $4, $5, app_user_id())`,
@@ -48,6 +50,7 @@ export class AttachmentsService {
         entityId: id,
         after: { contentType: clean.type, size: clean.bytes.byteLength },
       });
+      await this.store.put(key, clean.bytes);
     });
     return { id, contentType: clean.type };
   }
@@ -84,12 +87,35 @@ export class AttachmentsService {
   }
 }
 
-/** The uploader's own, not-yet-used attachment; used when an expense links its photo. */
+/** Photos uploaded but not attached to an expense yet, per user (bounds disk use; BUG-106). */
+export const MAX_UNCLAIMED_UPLOADS = 20;
+
+async function assertUnclaimedQuota(c: pg.PoolClient): Promise<void> {
+  // One upload per user at a time, so concurrent uploads cannot all slip under the quota.
+  await c.query(`SELECT pg_advisory_xact_lock(hashtext('upload:' || app_user_id()::text))`);
+  const { rows } = await c.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM attachment a
+      WHERE a.uploaded_by = app_user_id() AND a.created_at > now() - interval '7 days'
+        AND NOT EXISTS (SELECT 1 FROM expense e WHERE e.attachment_id = a.id)`,
+  );
+  if (Number(rows[0]?.n ?? 0) >= MAX_UNCLAIMED_UPLOADS) {
+    throw new DomainError(
+      'RATE_LIMITED',
+      'Too many photos waiting to be attached. Save the expenses you have started first.',
+    );
+  }
+}
+
+/**
+ * A not-yet-used attachment uploaded by the actor or, when the Owner corrects someone's
+ * expense, by that expense's author (BUG-109).
+ */
 export async function claimAttachment(
   c: pg.PoolClient,
   actor: Actor,
   attachmentId: string,
   expenseId: string,
+  author: string | null = null,
 ): Promise<void> {
   const { rows } = await c.query<{ uploaded_by: string; used_by: string | null }>(
     `SELECT a.uploaded_by, (SELECT e.id FROM expense e WHERE e.attachment_id = a.id) AS used_by
@@ -97,7 +123,9 @@ export async function claimAttachment(
     [attachmentId],
   );
   const a = rows[0];
-  if (!a || a.uploaded_by !== actor.userId)
+  const mayUse =
+    a?.uploaded_by === actor.userId || (canApprove(actor) && a?.uploaded_by === author);
+  if (!a || !mayUse)
     throw new DomainError('VALIDATION', 'Upload the bill photo again.', 'attachmentId');
   if (a.used_by && a.used_by !== expenseId)
     throw new DomainError(

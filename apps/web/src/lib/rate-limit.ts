@@ -53,4 +53,6 @@ export const limits = {
   resetIp: new RateLimiter(10, 60 * 60_000),
   /** Authenticated API calls per user. */
   api: new RateLimiter(300, 60_000),
+  /** Bill-photo uploads per user (10 MB each): BUG-106. */
+  upload: new RateLimiter(20, 60_000),
 };
