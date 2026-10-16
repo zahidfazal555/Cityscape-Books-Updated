@@ -15,7 +15,7 @@ import {
 import { allocateNumber, withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import { z } from 'zod';
-import { parse } from './validation.js';
+import { parse, pick, tenantOf as ctx } from './validation.js';
 
 export const PROJECT_STATUSES = ['active', 'on_hold', 'completed', 'cancelled'] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
@@ -129,7 +129,7 @@ export class ProjectsService {
       const { rows } = await c.query<Row>(
         `${SELECT}
           WHERE ($1::uuid[] IS NULL OR p.id = ANY($1::uuid[])) AND ($2::text IS NULL OR p.status = $2)
-          ORDER BY p.code DESC`,
+          ORDER BY p.created_at DESC, p.code DESC`,
         [scope, status ?? null],
       );
       return stripPnl(actor, rows.map(toProject));
@@ -137,9 +137,9 @@ export class ProjectsService {
   }
 
   async get(actor: Actor, id: string): Promise<Project> {
+    authorize(actor, 'projects', 'view');
     assertId(id, 'Project');
-    if (!can(actor, 'projects', 'view', id))
-      throw new DomainError('NOT_FOUND', 'Project not found.');
+    assertInScope(actor, id);
     return withTenant(this.pool, ctx(actor), async (c) =>
       stripPnl(actor, toProject(await getRow(c, id))),
     );
@@ -167,6 +167,13 @@ export class ProjectsService {
           'INSERT INTO user_project (company_id, user_id, project_id) VALUES (app_company_id(), app_user_id(), $1)',
           [id],
         );
+        // A scope change is an access change: record it like any rights change.
+        await writeAudit(c, {
+          action: 'grant_scope',
+          entity: 'user',
+          entityId: actor.userId,
+          after: { projectId: id, reason: 'creator of the project' },
+        });
       }
       await writeAudit(c, {
         action: 'create',
@@ -179,13 +186,13 @@ export class ProjectsService {
   }
 
   async update(actor: Actor, id: string, input: ProjectUpdate): Promise<void> {
+    authorize(actor, 'projects', 'view');
     assertId(id, 'Project');
-    if (!can(actor, 'projects', 'view', id))
-      throw new DomainError('NOT_FOUND', 'Project not found.');
+    assertInScope(actor, id);
     authorize(actor, 'projects', 'edit', id);
     const data = parse(updateSchema, input);
     await withTenant(this.pool, ctx(actor), async (c) => {
-      const before = toProject(await getRow(c, id));
+      const before = toProject(await getRow(c, id, true));
       const next = mergeFields(before, data);
       assertDates(next.startDate, next.endDate);
       if (next.status !== before.status) assertTransition(actor, before.status, next.status);
@@ -232,7 +239,6 @@ function newFields(d: z.output<typeof projectSchema>): Fields {
 
 /** Applies only the fields that were sent; `null` clears a nullable field. */
 function mergeFields(before: Project, d: z.output<typeof updateSchema>): Fields {
-  const pick = <T>(v: T | undefined, old: T): T => (v === undefined ? old : v);
   return {
     name: pick(d.name, before.name),
     clientId: pick(d.clientId, before.clientId),
@@ -268,15 +274,18 @@ async function assertReferences(
   next: Fields,
   before: Fields | null,
 ): Promise<void> {
-  if (next.clientId !== before?.clientId) await assertClient(c, next.clientId);
+  const live = (st: ProjectStatus): boolean => st === 'active' || st === 'on_hold';
+  // Reopening must re-check the client: it may have been archived while the project was closed.
+  const reopening = before !== null && live(next.status) && !live(before.status);
+  if (next.clientId !== before?.clientId || reopening) await assertClient(c, next.clientId);
   if (next.managerId !== before?.managerId) await assertStaff(c, next.managerId, 'managerId');
   if (next.engineerId !== before?.engineerId) await assertStaff(c, next.engineerId, 'engineerId');
 }
 
-const ctx = (actor: Actor): { companyId: string; userId: string } => ({
-  companyId: actor.companyId,
-  userId: actor.userId,
-});
+/** Out-of-scope projects answer 404 so their existence is not revealed. */
+function assertInScope(actor: Actor, id: string): void {
+  if (!can(actor, 'projects', 'view', id)) throw new DomainError('NOT_FOUND', 'Project not found.');
+}
 
 function assertDates(start: IsoDate, end: IsoDate | null): void {
   if (end !== null && end < start) {
@@ -297,8 +306,12 @@ function assertTransition(actor: Actor, from: ProjectStatus, to: ProjectStatus):
   }
 }
 
-async function getRow(c: pg.PoolClient, id: string): Promise<Row> {
-  const { rows } = await c.query<Row>(`${SELECT} WHERE p.id = $1`, [id]);
+/** `forUpdate` locks the project so concurrent edits and status changes serialise. */
+async function getRow(c: pg.PoolClient, id: string, forUpdate = false): Promise<Row> {
+  const { rows } = await c.query<Row>(
+    `${SELECT} WHERE p.id = $1${forUpdate ? ' FOR UPDATE OF p' : ''}`,
+    [id],
+  );
   const row = rows[0];
   if (!row) throw new DomainError('NOT_FOUND', 'Project not found.');
   return row;
@@ -306,7 +319,8 @@ async function getRow(c: pg.PoolClient, id: string): Promise<Row> {
 
 async function assertClient(c: pg.PoolClient, clientId: string): Promise<void> {
   const ok = await c.query(
-    `SELECT 1 FROM contact WHERE id = $1 AND type = 'client' AND deleted_at IS NULL`,
+    // FOR SHARE: an archive of this client waits until the project is committed (and then sees it).
+    `SELECT 1 FROM contact WHERE id = $1 AND type = 'client' AND deleted_at IS NULL FOR SHARE`,
     [clientId],
   );
   if (ok.rowCount !== 1)

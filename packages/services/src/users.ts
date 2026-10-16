@@ -14,7 +14,7 @@ import type pg from 'pg';
 import { z } from 'zod';
 import { revokeUserSessions, type AuthService } from './auth.js';
 import type { MailMessage } from './mailer.js';
-import { isUniqueViolation, parse } from './validation.js';
+import { isUniqueViolation, parse, tenantOf as ctx } from './validation.js';
 
 /** Users & security is owner-only and cannot be granted (Tech Spec §5). */
 export function assertOwner(actor: Actor): void {
@@ -326,11 +326,6 @@ export class UsersService {
     this.auth.sendAfterCommit([mail]);
   }
 }
-
-const ctx = (actor: Actor): { companyId: string; userId: string } => ({
-  companyId: actor.companyId,
-  userId: actor.userId,
-});
 
 async function getUser(
   c: pg.PoolClient,

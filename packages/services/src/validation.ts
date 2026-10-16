@@ -21,3 +21,31 @@ export function onDuplicate(field: string, message: string): (e: unknown) => nev
     throw isUniqueViolation(e) ? new DomainError('VALIDATION', message, field) : e;
   };
 }
+
+/** Tenant context for an authenticated actor. */
+export function tenantOf(actor: { companyId: string; userId: string }): {
+  companyId: string;
+  userId: string;
+} {
+  return { companyId: actor.companyId, userId: actor.userId };
+}
+
+/** Partial-update merge: `undefined` keeps the old value, `null` clears it. */
+export function pick<T>(value: T | undefined, old: T): T {
+  return value === undefined ? old : value;
+}
+
+/** Escapes LIKE/ILIKE wildcards so user search text matches literally (use with ESCAPE '\'). */
+export function likeLiteral(text: string): string {
+  return text.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/** Form fields often arrive as '' for "not given": treat them as null before validating. */
+export function blankToNull(value: unknown): unknown {
+  return typeof value === 'string' && value.trim() === '' ? null : value;
+}
+
+/** PAN shown as •••••1234F unless the viewer may see it in full. */
+export function maskPan(pan: string | null): string | null {
+  return pan === null ? null : `•••••${pan.slice(5)}`;
+}
