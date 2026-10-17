@@ -1,7 +1,8 @@
 # Production image for Cityscape Books (ENGINEERING-STANDARDS §5): one Next.js app; migrations and
 # scheduled jobs run from the same image with a different command (docs/GO-LIVE.md).
 FROM node:22-bookworm-slim AS deps
-ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
+# pnpm is fetched once here and baked into the image: the running container never downloads it.
+ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH COREPACK_HOME=/corepack
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -20,9 +21,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter @csd/web build
 
 FROM node:22-bookworm-slim AS run
-ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PNPM_HOME=/pnpm PATH=/pnpm:$PATH
-RUN corepack enable && corepack prepare pnpm@10.28.0 --activate 2>/dev/null || true
-RUN mkdir -p /data/attachments && chown node:node /data/attachments
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PNPM_HOME=/pnpm PATH=/pnpm:$PATH \
+    COREPACK_HOME=/corepack COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COREPACK_ENABLE_NETWORK=0
+COPY --from=deps --chown=node:node /corepack /corepack
+RUN corepack enable && mkdir -p /data/attachments && chown node:node /data/attachments
 WORKDIR /app
 COPY --from=build --chown=node:node /app /app
 USER node
@@ -30,4 +32,4 @@ USER node
 ENV ATTACHMENT_DIR=/data/attachments
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-CMD ["pnpm", "--filter", "@csd/web", "start", "--", "-p", "3000"]
+CMD ["pnpm", "--filter", "@csd/web", "start", "-p", "3000"]

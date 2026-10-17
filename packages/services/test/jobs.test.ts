@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Actor } from '@csd/core';
-import { TicketsService, anonymiseCallers, slaSweep, verifyBooks } from '../src/index.js';
+import {
+  TicketsService,
+  anonymiseCallers,
+  bootstrapCompany,
+  slaSweep,
+  verifyBooks,
+} from '../src/index.js';
 import { actorFor, appPool, closePools, makeCompany, superPool, type Fixture } from './helpers.js';
 import { clientProject } from './sales-helpers.js';
 
@@ -70,5 +76,25 @@ describe('scheduled jobs (go-live)', () => {
   it('verify:books passes for consistent books', async () => {
     const r = (await verifyBooks(superPool)).find((x) => x.companyId === f.companyId);
     expect(r).toMatchObject({ ok: true, problems: [] });
+  });
+
+  it('bootstrap creates the company, its accounts and a password-less Owner, once', async () => {
+    const email = `owner.${Date.now()}@example.test`;
+    const name = `Boot Co ${Date.now()}`;
+    const r = await bootstrapCompany(superPool, {
+      company: name,
+      ownerName: 'Saravanan S',
+      ownerEmail: email,
+    });
+    const { rows } = await superPool.query(
+      `SELECT (SELECT count(*)::int FROM account WHERE company_id = $1) AS accounts,
+              (SELECT password_hash FROM app_user WHERE id = $2) AS hash`,
+      [r.companyId, r.ownerId],
+    );
+    expect(rows[0].accounts).toBeGreaterThan(10);
+    expect(rows[0].hash).toBeNull();
+    await expect(
+      bootstrapCompany(superPool, { company: name, ownerName: 'X', ownerEmail: email }),
+    ).rejects.toThrow();
   });
 });

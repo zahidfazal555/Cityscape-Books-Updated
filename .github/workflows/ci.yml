@@ -75,3 +75,12 @@ jobs:
           echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
           /tmp/gitleaks git --redact --no-banner --exit-code 1 .
+
+  image:
+    # The production image must keep building (docs/GO-LIVE.md); it is not pushed from CI.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build the production image
+        run: docker build -t cityscape-books:ci .

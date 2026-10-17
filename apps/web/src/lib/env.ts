@@ -52,19 +52,23 @@ export function env(): Env {
 
 /** Settings that are only safe outside production are refused there (fail fast at start-up). */
 function assertProduction(e: Env): void {
+  const prod = e.NODE_ENV === 'production';
   const e2e = e.CSD_ALLOW_OUTBOX_IN_PRODUCTION === 'e2e';
-  if (e.NODE_ENV === 'production' && e.MAIL_MODE === 'outbox' && !e2e) {
-    throw new Error('Invalid configuration — production needs a real mail provider (MAIL_MODE).');
-  }
-  if (e.NODE_ENV === 'production' && e.CSD_LOGIN_LIMIT_PER_MINUTE > 10 && !e2e) {
-    throw new Error(
-      'Invalid configuration — CSD_LOGIN_LIMIT_PER_MINUTE cannot exceed 10 in production.',
-    );
-  }
-  if (e.MAIL_MODE === 'smtp' && (!e.SMTP_URL || !e.MAIL_FROM)) {
-    throw new Error('Invalid configuration — MAIL_MODE=smtp needs SMTP_URL and MAIL_FROM.');
-  }
-  if (e.NODE_ENV === 'production' && !e.ATTACHMENT_DIR) {
-    throw new Error('Invalid configuration — ATTACHMENT_DIR is required in production.');
-  }
+  const rules: [boolean, string][] = [
+    [
+      prod && e.MAIL_MODE === 'outbox' && !e2e,
+      'production needs a real mail provider (MAIL_MODE).',
+    ],
+    [
+      prod && e.CSD_LOGIN_LIMIT_PER_MINUTE > 10 && !e2e,
+      'CSD_LOGIN_LIMIT_PER_MINUTE cannot exceed 10 in production.',
+    ],
+    [
+      e.MAIL_MODE === 'smtp' && (!e.SMTP_URL || !e.MAIL_FROM),
+      'MAIL_MODE=smtp needs SMTP_URL and MAIL_FROM.',
+    ],
+    [prod && !e.ATTACHMENT_DIR, 'ATTACHMENT_DIR is required in production.'],
+  ];
+  const broken = rules.find(([bad]) => bad);
+  if (broken) throw new Error(`Invalid configuration — ${broken[1]}`);
 }

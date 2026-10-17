@@ -34,6 +34,9 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
   before/after photos whose cost becomes a Pending expense, customer ratings, linked quotations and
   invoices, and a support dashboard; the warranty register with handover (marks the project
   Completed); care guides and reply templates.
+- Go-live: SMTP mail (MAIL_MODE=smtp), the header notification bell, scheduled jobs (`pnpm jobs`
+  sla-sweep / verify-books / retention / bootstrap), the production Dockerfile with a CI image build, and
+  docs/GO-LIVE.md.
 
 ### Changed
 - H2 approvals are keyed to the Owner role: granting `approvals = full` to another user no longer

@@ -91,3 +91,51 @@ export async function verifyBooks(admin: pg.Pool): Promise<BooksCheck[]> {
   }
   return out;
 }
+
+function checkBootstrap(input: { company: string; ownerName: string; ownerEmail: string }): string {
+  const email = input.ownerEmail.trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error('Give the Owner a valid email.');
+  if (!input.company.trim() || !input.ownerName.trim())
+    throw new Error('Give the company and Owner names.');
+  return email;
+}
+
+/**
+ * First-time set-up (docs/GO-LIVE.md): the company, its chart of accounts and the Owner, who has no
+ * password yet and sets one through "Forgot password" on the sign-in page. Refuses to run twice.
+ */
+export async function bootstrapCompany(
+  admin: pg.Pool,
+  input: { company: string; ownerName: string; ownerEmail: string; stateCode?: string },
+): Promise<{ companyId: string; ownerId: string }> {
+  const email = checkBootstrap(input);
+  const c = await admin.connect();
+  try {
+    await c.query('BEGIN');
+    const taken = await c.query(
+      `SELECT 1 FROM company WHERE name = $1 UNION ALL SELECT 1 FROM app_user WHERE email = $2`,
+      [input.company.trim(), email],
+    );
+    if (taken.rowCount) throw new Error('That company or Owner email already exists.');
+    const co = await c.query<{ id: string }>(
+      `INSERT INTO company (name, state_code) VALUES ($1, $2) RETURNING id`,
+      [input.company.trim(), input.stateCode ?? '33'],
+    );
+    const companyId = co.rows[0]?.id;
+    if (!companyId) throw new Error('The company was not created.');
+    await c.query('SELECT seed_company_accounts($1)', [companyId]);
+    const owner = await c.query<{ id: string }>(
+      `INSERT INTO app_user (company_id, name, email, role) VALUES ($1, $2, $3, 'owner') RETURNING id`,
+      [companyId, input.ownerName.trim(), email],
+    );
+    await c.query('COMMIT');
+    const ownerId = owner.rows[0]?.id;
+    if (!ownerId) throw new Error('The Owner was not created.');
+    return { companyId, ownerId };
+  } catch (e) {
+    await c.query('ROLLBACK');
+    throw e;
+  } finally {
+    c.release();
+  }
+}
