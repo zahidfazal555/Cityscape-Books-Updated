@@ -8,6 +8,7 @@ import {
   authorize,
   can,
   fromDecimalString,
+  projectScope,
   todayIn,
   toDecimalString,
   type Actor,
@@ -19,6 +20,7 @@ import { withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import { z } from 'zod';
 import { claimAttachment } from './attachments.js';
+import { assertLiveProject } from './purchase-orders.js';
 import { loadTicket, systemEvent } from './tickets.js';
 import { companyRow, isoDate, parse, tenantOf as ctx } from './validation.js';
 
@@ -168,14 +170,18 @@ export class VisitsService {
     return withTenant(this.pool, ctx(actor), async (c) => {
       const { rows } = await c.query<Row>(
         `${SELECT} WHERE ($1::uuid IS NULL OR v.ticket_id = $1)
+           AND ($2::uuid[] IS NULL OR t.project_id = ANY($2::uuid[]) OR v.engineer_id = app_user_id())
          ORDER BY v.status = 'scheduled' DESC, v.visit_date DESC, v.created_at DESC LIMIT 500`,
-        [ticketId ?? null],
+        [ticketId ?? null, projectScope(actor)],
       );
       return rows.filter((r) => canSee(actor, r)).map(toVisit);
     });
   }
 
-  /** The engineer's own visits (mobile home): scheduled first, oldest date first. */
+  /**
+   * The engineer's own visits (mobile home): scheduled first, oldest date first. No rights module:
+   * a site engineer reads only `engineer_id = me` (Technical Spec §14), enforced in the query.
+   */
   async mine(actor: Actor): Promise<SiteVisit[]> {
     return withTenant(this.pool, ctx(actor), async (c) => {
       const { rows } = await c.query<Row>(
@@ -267,7 +273,13 @@ export class VisitsService {
                 completed_at = now(), completed_by = app_user_id() WHERE id = $1`,
         [id, data.workDone, data.cost ? toDecimalString(data.cost) : null, expenseId],
       );
-      await afterVisit(c, v.ticketId);
+      // BUG-157: completing a visit always moves the ticket to In progress (README §18).
+      await c.query(
+        `UPDATE ticket SET status = 'in_progress', updated_by = app_user_id()
+          WHERE id = $1 AND status NOT IN ('resolved', 'closed')
+            AND NOT EXISTS (SELECT 1 FROM site_visit WHERE ticket_id = $1 AND status = 'scheduled')`,
+        [v.ticketId],
+      );
       await systemEvent(c, v.ticketId, `Visit completed by ${v.engineerName}`);
       await c.query(
         `INSERT INTO ticket_event (company_id, ticket_id, kind, body, author_id)
@@ -357,6 +369,8 @@ async function visitExpense(
 ): Promise<string> {
   const today = todayIn();
   assertNotLocked(today, (await companyRow(c)).lock_date, 'cost');
+  // BUG-154: a completed (handed-over) project takes visit costs; a cancelled one does not.
+  await assertLiveProject(c, v.projectId, true);
   const id = randomUUID();
   if (data.billPhotoId) await claimAttachment(c, actor, data.billPhotoId, id);
   await c.query(

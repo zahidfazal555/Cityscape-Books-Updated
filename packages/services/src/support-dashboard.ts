@@ -1,4 +1,4 @@
-import { authorize, fromDecimalString, projectScope, type Actor, type Paise } from '@csd/core';
+import { authorize, can, fromDecimalString, projectScope, type Actor, type Paise } from '@csd/core';
 import { withTenant } from '@csd/db';
 import type pg from 'pg';
 import { tenantOf as ctx } from './validation.js';
@@ -31,6 +31,14 @@ const metrics = (m: Record<string, string | null>) => ({
   resolutionSlaMetPct: round1(m['res_met'] ?? null),
   avgRating: round1(m['rating'] ?? null),
 });
+
+const costsFor = (actor: Actor, r: { approved: string; pending: string } | undefined) =>
+  can(actor, 'expenses', 'view')
+    ? {
+        approved: fromDecimalString(r?.approved ?? '0'),
+        pending: fromDecimalString(r?.pending ?? '0'),
+      }
+    : { approved: 0, pending: 0 };
 
 const round1 = (v: string | null) => (v === null ? null : Math.round(Number(v) * 10) / 10);
 
@@ -83,15 +91,13 @@ export class SupportDashboardService {
                                     OR coalesce(t.first_response_at, t.resolved_at, now()) > t.resp_due)::int AS breached,
                 avg(t.rating)::text AS rating
            FROM ticket t JOIN app_user u ON u.id = t.assignee_id
-          WHERE ${scoped} GROUP BY u.name ORDER BY open DESC, u.name`,
+          WHERE ${scoped} GROUP BY u.id, u.name ORDER BY open DESC, u.name`,
         scope,
       );
       return {
         ...metrics(m),
-        serviceCost: {
-          approved: fromDecimalString(cost.rows[0]?.approved ?? '0'),
-          pending: fromDecimalString(cost.rows[0]?.pending ?? '0'),
-        },
+        // Costs follow the expenses right, as on the ticket's billing card.
+        serviceCost: costsFor(actor, cost.rows[0]),
         byType: await group('t.type'),
         byStatus: await group('t.status'),
         byProject: await group('p.code', 'JOIN project p ON p.id = t.project_id'),

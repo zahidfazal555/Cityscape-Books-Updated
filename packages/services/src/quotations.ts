@@ -396,8 +396,10 @@ export class QuotationsService {
     assertId(id, 'Quotation');
     const data = parse(acceptSchema, input);
     authorize(actor, 'quotes', 'edit');
-    authorize(actor, 'projects', data.projectId ? 'view' : 'edit');
     return withTenant(this.pool, ctx(actor), async (c) => {
+      const ticketProject = await ticketProjectOf(c, id);
+      // Linking a project needs only view; creating one needs edit.
+      authorize(actor, 'projects', data.projectId || ticketProject ? 'view' : 'edit');
       const q = await this.load(c, actor, id, true);
       authorize(actor, 'quotes', 'edit', q.projectId ?? undefined);
       if (q.status !== 'sent') {
@@ -408,12 +410,7 @@ export class QuotationsService {
             : 'Only a sent quotation can be accepted.',
         );
       }
-      // README §18: a service quotation raised from a ticket links to the ticket's project.
-      const ticketProject = await ticketProjectOf(c, id);
-      const linkTo = data.projectId ?? ticketProject;
-      const project = linkTo
-        ? await linkProject(c, actor, linkTo, q.clientId)
-        : await createProjectTx(c, actor, projectFromQuote(q, data));
+      const project = await acceptedOnto(c, actor, q, data, ticketProject);
       await c.query(
         `UPDATE quotation SET status = 'accepted', project_id = $2, version = version + 1, updated_by = app_user_id()
           WHERE id = $1`,
@@ -695,6 +692,7 @@ async function linkProject(
   actor: Actor,
   projectId: string,
   clientId: string,
+  allowCompleted = false,
 ): Promise<{ id: string; code: string }> {
   if (!can(actor, 'projects', 'view', projectId))
     throw new DomainError('NOT_FOUND', 'Project not found.');
@@ -706,7 +704,7 @@ async function linkProject(
   if (!p) throw new DomainError('NOT_FOUND', 'Project not found.');
   if (p.client_id !== clientId)
     throw new DomainError('VALIDATION', 'That project belongs to another client.', 'projectId');
-  if (p.status === 'cancelled' || p.status === 'completed')
+  if (p.status === 'cancelled' || (p.status === 'completed' && !allowCompleted))
     throw new DomainError('VALIDATION', 'That project is closed.', 'projectId');
   return { id: projectId, code: p.code };
 }
@@ -717,4 +715,27 @@ async function ticketProjectOf(c: pg.PoolClient, quotationId: string): Promise<s
     [quotationId],
   );
   return rows[0]?.project_id;
+}
+
+/**
+ * README §18: a service quotation raised from a ticket links to the ticket's project, even after
+ * handover (BUG-155), and to no other (BUG-156); otherwise the chosen project, or a new one.
+ */
+async function acceptedOnto(
+  c: pg.PoolClient,
+  actor: Actor,
+  q: QuoteDetail,
+  data: z.output<typeof acceptSchema>,
+  ticketProject: string | undefined,
+): Promise<{ id: string; code: string }> {
+  if (ticketProject && data.projectId && data.projectId !== ticketProject)
+    throw new DomainError(
+      'VALIDATION',
+      "A ticket's quotation goes to the ticket's project.",
+      'projectId',
+    );
+  const linkTo = ticketProject ?? data.projectId;
+  return linkTo
+    ? linkProject(c, actor, linkTo, q.clientId, !!ticketProject)
+    : createProjectTx(c, actor, projectFromQuote(q, data));
 }
