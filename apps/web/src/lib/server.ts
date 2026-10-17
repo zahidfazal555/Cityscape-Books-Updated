@@ -6,6 +6,10 @@ import {
   ApprovalsService,
   AttachmentsService,
   AuditService,
+  BankingService,
+  GstService,
+  OutstandingService,
+  ReportsService,
   AuthService,
   ContactsService,
   ExpensesService,
@@ -47,6 +51,10 @@ export interface Services {
   attachments: AttachmentsService;
   expenses: ExpensesService;
   approvals: ApprovalsService;
+  banking: BankingService;
+  outstanding: OutstandingService;
+  gst: GstService;
+  reports: ReportsService;
 }
 
 const g = globalThis as unknown as { __csd?: Services };
@@ -94,6 +102,10 @@ export function services(): Services {
     ),
     expenses: new ExpensesService(pool),
     approvals: new ApprovalsService(pool),
+    banking: new BankingService(pool),
+    outstanding: new OutstandingService(pool),
+    gst: new GstService(pool),
+    reports: new ReportsService(pool),
     receipts: new ReceiptsService(pool),
   };
   return g.__csd;

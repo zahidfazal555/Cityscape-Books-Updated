@@ -22,3 +22,7 @@ export * from './files.js';
 export * from './attachments.js';
 export * from './expenses.js';
 export * from './approvals.js';
+export * from './banking.js';
+export * from './outstanding.js';
+export * from './gst.js';
+export * from './reports.js';

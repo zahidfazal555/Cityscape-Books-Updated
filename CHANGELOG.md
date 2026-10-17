@@ -16,6 +16,10 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
 - Screens for purchase orders (with convert to bill), purchase bills and payments, expenses (filters,
   bill-photo viewer, audited CSV), the Owner's approval cards, and the site engineer's phone layout
   with camera capture.
+- Accounts: cash/bank/UPI registers with opening balances and statement matching, spend by staff;
+  receivables and payables with ageing; GST returns (GSTR-3B summary with set-off, GSTR-1 tables and
+  JSON, Table 11A/11B, ITC register); reports (project income and expenses, P&L, category pivot,
+  trial balance) with audited CSV exports.
 
 ### Changed
 - H2 approvals are keyed to the Owner role: granting `approvals = full` to another user no longer
