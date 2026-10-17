@@ -29,6 +29,11 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
   wage or contractor payment and every salary, daily-rate or job-value change by a non-owner waits for
   the Owner (Approvals → Payroll and Rate changes).
 - Inventory (FR-18): material purchase tracking per project with category totals and audited CSV.
+- Support (FR-19–21): service-desk tickets (TKT-####) with coverage decided at logging, SLA clocks and
+  breach notifications, an activity thread (reply, call, internal note), site visits with required
+  before/after photos whose cost becomes a Pending expense, customer ratings, linked quotations and
+  invoices, and a support dashboard; the warranty register with handover (marks the project
+  Completed); care guides and reply templates.
 
 ### Changed
 - H2 approvals are keyed to the Owner role: granting `approvals = full` to another user no longer

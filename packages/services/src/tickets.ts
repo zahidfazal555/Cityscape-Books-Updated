@@ -59,9 +59,7 @@ const ratingSchema = z.object({
 
 export type TicketInput = z.input<typeof ticketSchema>;
 export type TicketUpdate = z.input<typeof updateSchema>;
-export type TicketView =
-  'open' | 'mine' | 'breached' | 'unassigned' | 'resolved' | 'closed' | 'all';
-export const TICKET_VIEWS: readonly TicketView[] = [
+export const TICKET_VIEWS = [
   'open',
   'mine',
   'breached',
@@ -69,7 +67,8 @@ export const TICKET_VIEWS: readonly TicketView[] = [
   'resolved',
   'closed',
   'all',
-];
+] as const;
+export type TicketView = (typeof TICKET_VIEWS)[number];
 
 export interface TicketSummary {
   id: string;
@@ -153,10 +152,10 @@ interface Row {
 }
 
 /** Breached: a target passed unmet (response, or resolution while still unresolved). */
-const BREACHED = `(
+const BREACHED = `coalesce(
   (t.first_response_at IS NULL AND t.resolved_at IS NULL AND t.resp_due < now())
   OR (t.first_response_at > t.resp_due)
-  OR (coalesce(t.resolved_at, now()) > t.resolve_due))`;
+  OR (coalesce(t.resolved_at, now()) > t.resolve_due), false)`;
 const OPEN = `t.status NOT IN ('resolved', 'closed')`;
 
 const SELECT = `

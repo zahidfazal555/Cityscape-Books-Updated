@@ -4,6 +4,12 @@ import path from 'node:path';
 import pg from 'pg';
 import {
   ApprovalsService,
+  KnowledgeBaseService,
+  SupportDashboardService,
+  TicketBillingService,
+  TicketsService,
+  VisitsService,
+  WarrantyService,
   InventoryService,
   LabourService,
   PayrollService,
@@ -61,6 +67,12 @@ export interface Services {
   payroll: PayrollService;
   labour: LabourService;
   inventory: InventoryService;
+  tickets: TicketsService;
+  visits: VisitsService;
+  warranty: WarrantyService;
+  kb: KnowledgeBaseService;
+  ticketBilling: TicketBillingService;
+  supportDashboard: SupportDashboardService;
 }
 
 const g = globalThis as unknown as { __csd?: Services };
@@ -116,6 +128,12 @@ export function services(): Services {
     payroll: new PayrollService(pool),
     labour: new LabourService(pool),
     inventory: new InventoryService(pool),
+    tickets: new TicketsService(pool),
+    visits: new VisitsService(pool),
+    warranty: new WarrantyService(pool),
+    kb: new KnowledgeBaseService(pool),
+    ticketBilling: new TicketBillingService(pool),
+    supportDashboard: new SupportDashboardService(pool),
   };
   return g.__csd;
 }

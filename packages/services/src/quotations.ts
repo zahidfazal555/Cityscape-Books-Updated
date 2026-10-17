@@ -408,8 +408,11 @@ export class QuotationsService {
             : 'Only a sent quotation can be accepted.',
         );
       }
-      const project = data.projectId
-        ? await linkProject(c, actor, data.projectId, q.clientId)
+      // README §18: a service quotation raised from a ticket links to the ticket's project.
+      const ticketProject = await ticketProjectOf(c, id);
+      const linkTo = data.projectId ?? ticketProject;
+      const project = linkTo
+        ? await linkProject(c, actor, linkTo, q.clientId)
         : await createProjectTx(c, actor, projectFromQuote(q, data));
       await c.query(
         `UPDATE quotation SET status = 'accepted', project_id = $2, version = version + 1, updated_by = app_user_id()
@@ -706,4 +709,12 @@ async function linkProject(
   if (p.status === 'cancelled' || p.status === 'completed')
     throw new DomainError('VALIDATION', 'That project is closed.', 'projectId');
   return { id: projectId, code: p.code };
+}
+
+async function ticketProjectOf(c: pg.PoolClient, quotationId: string): Promise<string | undefined> {
+  const { rows } = await c.query<{ project_id: string }>(
+    `SELECT t.project_id FROM quotation q JOIN ticket t ON t.id = q.ticket_id WHERE q.id = $1`,
+    [quotationId],
+  );
+  return rows[0]?.project_id;
 }

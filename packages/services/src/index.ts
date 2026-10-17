@@ -35,3 +35,4 @@ export * from './visits.js';
 export * from './warranty.js';
 export * from './kb.js';
 export * from './support-dashboard.js';
+export * from './ticket-billing.js';
