@@ -51,8 +51,10 @@ export const REFERENCE_LABEL: Record<ReceiptMode, string> = {
 export function toCsv(rows: readonly (readonly (string | number)[])[]): string {
   const cell = (v: string | number) => {
     const s = String(v);
-    // A leading = + - @ (or tab / CR before one) would run as a formula in a spreadsheet.
-    const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+    // A leading = + - @ (or tab / CR before one) would run as a formula in a spreadsheet; plain
+    // numbers such as -10000.00 stay numbers (BUG-128).
+    const numeric = typeof v === 'number' || /^-?\d+(\.\d+)?$/.test(s);
+    const safe = !numeric && /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
     return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
   };
   return rows.map((r) => r.map(cell).join(',')).join('\r\n');

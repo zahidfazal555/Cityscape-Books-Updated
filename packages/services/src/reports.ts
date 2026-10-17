@@ -7,8 +7,10 @@ import {
   fromDecimalString,
   projectScope,
   stripPnl,
+  todayIn,
   type Actor,
   type CostCategory,
+  type IsoDate,
   type Paise,
 } from '@csd/core';
 import { withTenant, writeAudit } from '@csd/db';
@@ -43,6 +45,15 @@ export interface TrialBalanceRow {
 
 export type ReportName =
   'income-expense' | 'pnl' | 'category' | 'trial-balance' | 'gstr1-csv' | 'bank-register';
+
+const EXPORT_MODULE: Record<ReportName, 'reports' | 'gst' | 'banking'> = {
+  'income-expense': 'reports',
+  pnl: 'reports',
+  category: 'reports',
+  'trial-balance': 'reports',
+  'gstr1-csv': 'gst',
+  'bank-register': 'banking',
+};
 
 /**
  * Reports (Req §4.16). SPEC-FIXES A3: project P&L is the sum of the journal by project over
@@ -118,43 +129,54 @@ export class ReportsService {
     });
   }
 
-  /** FR-16.3: every account's debits and credits, with the balance check (Owner or `pnl`). */
+  /**
+   * FR-16.3: every active account with its net balance on the debit or credit side as at a date
+   * (BUG-130: reversals cancel instead of inflating both sides), and the balance check.
+   */
   async trialBalance(
     actor: Actor,
-  ): Promise<{ rows: TrialBalanceRow[]; debit: Paise; credit: Paise; balanced: boolean }> {
+    asOf: IsoDate = todayIn(),
+  ): Promise<{
+    asOf: IsoDate;
+    rows: TrialBalanceRow[];
+    debit: Paise;
+    credit: Paise;
+    balanced: boolean;
+  }> {
     authorize(actor, 'reports', 'view');
     if (actor.role !== 'owner' && !can(actor, 'pnl', 'view'))
       throw new DomainError('FORBIDDEN', 'The trial balance needs the profit right.');
     if (projectScope(actor) !== null)
       throw new DomainError('FORBIDDEN', 'The trial balance needs access to all projects.');
     return withTenant(this.pool, ctx(actor), async (c) => {
-      const { rows } = await c.query<{
-        code: string;
-        name: string;
-        type: string;
-        debit: string;
-        credit: string;
-      }>(
-        `SELECT a.code, a.name, a.type, coalesce(sum(l.debit), 0)::text AS debit, coalesce(sum(l.credit), 0)::text AS credit
-           FROM account a LEFT JOIN journal_line l ON l.account_id = a.id
-          GROUP BY a.code, a.name, a.type HAVING coalesce(sum(l.debit), 0) + coalesce(sum(l.credit), 0) > 0
-          ORDER BY a.code`,
+      const { rows } = await c.query<{ code: string; name: string; type: string; net: string }>(
+        `SELECT a.code, a.name, a.type, coalesce(sum(l.debit - l.credit), 0)::text AS net
+           FROM account a
+           LEFT JOIN (journal_line l JOIN journal j ON j.id = l.journal_id AND j.txn_date <= $1) ON l.account_id = a.id
+          WHERE a.is_active OR l.id IS NOT NULL
+          GROUP BY a.code, a.name, a.type ORDER BY a.code`,
+        [asOf],
       );
-      const list = rows.map((r) => ({
-        code: r.code,
-        name: r.name,
-        type: r.type,
-        debit: fromDecimalString(r.debit),
-        credit: fromDecimalString(r.credit),
-      }));
+      const list = rows.map((r) => {
+        const net = fromDecimalString(r.net);
+        return {
+          code: r.code,
+          name: r.name,
+          type: r.type,
+          debit: Math.max(0, net),
+          credit: Math.max(0, -net),
+        };
+      });
       const debit = list.reduce((s, r) => s + r.debit, 0);
       const credit = list.reduce((s, r) => s + r.credit, 0);
-      return { rows: list, debit, credit, balanced: debit === credit };
+      return { asOf, rows: list, debit, credit, balanced: debit === credit };
     });
   }
 
   /** H4: a CSV export of any report writes an audit row (the report's own rights apply first). */
   async recordExport(actor: Actor, report: ReportName, rows: number): Promise<void> {
+    // BUG-131: the caller's right to the report is checked here too, not only by the route.
+    authorize(actor, EXPORT_MODULE[report], 'view');
     await withTenant(this.pool, ctx(actor), (c) =>
       writeAudit(c, {
         action: 'export',

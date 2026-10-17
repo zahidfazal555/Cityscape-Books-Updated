@@ -631,6 +631,12 @@ async function applyAdvances(
     `UPDATE receipt_allocation SET invoice_id = $2, applied_at = $3 WHERE id = ANY($1::uuid[])`,
     [rows.map((r) => r.id), inv.id, invoiceDate],
   );
+  // Dated history for GST Table 11B (BUG-120): past months never depend on today's row state.
+  await c.query(
+    `INSERT INTO advance_event (company_id, allocation_id, kind, event_date, invoice_id)
+     SELECT app_company_id(), id, 'applied', $2, $3 FROM unnest($1::uuid[]) AS id`,
+    [rows.map((r) => r.id), invoiceDate, inv.id],
+  );
   const journalId = await postJournal(c, {
     txnDate: invoiceDate,
     sourceType: 'advance_applied',

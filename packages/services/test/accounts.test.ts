@@ -198,7 +198,7 @@ describe('GST returns for October 2026 (FR-15)', () => {
     expect(j.fp).toBe('102026');
     expect(j.b2b[0]?.inv.map((i) => i.inum)).toHaveLength(3);
     expect(j.cdnr[0]?.nt).toHaveLength(1);
-    expect(j.hsn.data[0]).toMatchObject({ hsn_sc: '9954', txval: 150000 });
+    expect(j.hsn.hsn_b2b[0]).toMatchObject({ hsn_sc: '9954', uqc: 'NA', txval: 150000 });
     const { rows } = await superPool.query(
       `SELECT 1 FROM audit_log WHERE company_id = $1 AND entity = 'gstr1' AND action = 'export'`,
       [f.companyId],
@@ -292,5 +292,85 @@ describe('reports (FR-16)', () => {
     expect(tb.balanced).toBe(true);
     expect(tb.debit).toBe(tb.credit);
     await expect(reports.trialBalance(manager)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+});
+
+describe('review regressions (PR 12)', () => {
+  it('BUG-125/126: replacing an opening balance three times leaves only the last; the old one reverses on its own date', async () => {
+    await banking.setOpening(owner, { code: '1000', amount: 100_00, asOf: '2026-04-01' });
+    await banking.setOpening(owner, { code: '1000', amount: 200_00, asOf: '2026-04-01' });
+    await banking.setOpening(owner, { code: '1000', amount: 300_00, asOf: '2026-04-01' });
+    const april = await banking.register(owner, '1000', { from: '2026-04-01', to: '2026-04-30' });
+    expect(april.closing).toBe(300_00);
+    await banking.setOpening(owner, { code: '1000', amount: 700_00, asOf: '2026-06-01' });
+    const may = await banking.register(owner, '1000', { from: '2026-04-01', to: '2026-05-31' });
+    expect(may.closing).toBe(0);
+    const june = await banking.register(owner, '1000', { from: '2026-06-01', to: '2026-06-30' });
+    expect(june.closing).toBe(700_00);
+  });
+
+  it('BUG-129: a deleted receipt and its reversal need no statement match', async () => {
+    const r = await receipts.record(owner, {
+      invoiceId: b2bInvoice,
+      receiptDate: '2026-10-13',
+      amount: 1_000_00,
+      mode: 'bank',
+      reference: 'UTR-DEL',
+    });
+    const before = await banking.register(owner, '1010', { from: '2026-10-01', to: '2026-10-31' });
+    await receipts.remove(owner, r.id);
+    const after = await banking.register(owner, '1010', { from: '2026-10-01', to: '2026-10-31' });
+    const pair = after.lines.filter((l) => l.particulars.includes('UTR-DEL') || l.reversed);
+    expect(pair.every((l) => l.reversed)).toBe(true);
+    expect(after.unmatched).toBe(before.unmatched - 1);
+    expect(after.lines.find((l) => l.sourceType === 'receipt' && !l.reversed)?.mode).toBe('bank');
+  });
+
+  it('BUG-120: a released and re-converted advance keeps earlier months as filed', async () => {
+    const pf = await proformas.create(owner, {
+      projectId,
+      stage: 'Released',
+      pfDate: '2026-07-01',
+      dueDate: '2026-07-10',
+      lines: [{ description: 'Advance', qtyMilli: 1000, rate: 10_000_00 }],
+    });
+    await receipts.record(owner, {
+      proformaId: pf.id,
+      receiptDate: '2026-07-10',
+      amount: 11_800_00,
+      mode: 'cash',
+    });
+    const conv = await proformas.convert(owner, pf.id, { invoiceDate: '2026-08-05' });
+    const aug = await gst.month(owner, '2026-08');
+    expect(aug.advances.adjusted.map((a) => a.event)).toEqual(['applied']);
+    await invoices.cancel(owner, conv.invoiceId, { cnDate: '2026-09-05', reason: 'Wrong client' });
+    // August is unchanged; September reports the released advance again in 11A.
+    const augAgain = await gst.month(owner, '2026-08');
+    expect(augAgain.advancesAdjusted).toEqual(aug.advancesAdjusted);
+    const sep = await gst.month(owner, '2026-09');
+    expect(sep.advances.received.map((a) => [a.event, a.amount])).toContainEqual([
+      'released',
+      11_800_00,
+    ]);
+    await proformas.convert(owner, pf.id, { invoiceDate: '2026-10-05' });
+    const oct = await gst.month(owner, '2026-10');
+    expect(oct.advances.adjusted.map((a) => a.amount)).toContain(11_800_00);
+  });
+
+  it('BUG-124: unused credit carries into the next month', async () => {
+    const sep = await gst.month(owner, '2026-09');
+    const oct = await gst.month(owner, '2026-10');
+    expect(oct.openingCredit).toEqual(sep.setOff.carryForward);
+  });
+
+  it('BUG-130/131: trial balance shows net sides for every active account; exports are authorised', async () => {
+    const tb = await reports.trialBalance(owner);
+    expect(tb.rows.map((r) => r.code)).toContain('6000');
+    expect(tb.rows.every((r) => r.debit === 0 || r.credit === 0)).toBe(true);
+    expect(tb.balanced).toBe(true);
+    const asst = actorFor(f, await makeUser(f.companyId, 'asstmgr'), 'asstmgr');
+    await expect(reports.recordExport(asst, 'gstr1-csv', 1)).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
   });
 });

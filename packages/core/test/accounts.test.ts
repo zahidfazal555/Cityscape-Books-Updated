@@ -5,6 +5,7 @@ import {
   buildGstr1,
   daysBetween,
   daysOverdue,
+  gstr1DueDate,
   monthRange,
   overdueTone,
   returnDueDate,
@@ -19,9 +20,10 @@ describe('dates for returns', () => {
     expect(() => monthRange('2026-13')).toThrow();
   });
 
-  it('returns are due on the 20th of the next month, across the year end', () => {
+  it('GSTR-3B is due on the 20th and GSTR-1 on the 11th of the next month, across the year end', () => {
     expect(returnDueDate('2026-10')).toBe('2026-11-20');
     expect(returnDueDate('2026-12')).toBe('2027-01-20');
+    expect(gstr1DueDate('2026-10')).toBe('2026-11-11');
   });
 });
 
@@ -126,6 +128,7 @@ describe('GSTR-1 JSON (FR-15.6)', () => {
       ],
       hsn: [
         {
+          b2b: true,
           hsn: '9954',
           rate: 18,
           qtyMilli: 2000,
@@ -171,6 +174,56 @@ describe('GSTR-1 JSON (FR-15.6)', () => {
       nt_num: 'CN/26-27/0001',
       nt_dt: '09-10-2026',
     });
-    expect(j.hsn.data[0]).toMatchObject({ hsn_sc: '9954', qty: 2, txval: 200000, camt: 18000 });
+    expect(j.hsn.hsn_b2b[0]).toMatchObject({
+      hsn_sc: '9954',
+      uqc: 'NA',
+      qty: 0,
+      txval: 200000,
+      camt: 18000,
+    });
+    expect(j.hsn.hsn_b2c).toEqual([]);
+  });
+});
+
+describe('review regressions (PR 12, core)', () => {
+  it('BUG-122: IGST credit goes where the own-head credit falls short, leaving least cash to pay', () => {
+    const s = setOff({ igst: 0, cgst: 100, sgst: 100 }, { igst: 100, cgst: 100, sgst: 0 });
+    expect(s.cash).toEqual({ igst: 0, cgst: 0, sgst: 0 });
+    expect(s.carryForward).toEqual({ igst: 0, cgst: 0, sgst: 0 });
+  });
+
+  it('BUG-121/123: large inter-state B2C invoices go to b2cl, their notes to cdnur; small B2C notes net into b2cs', () => {
+    const igst = (n: number) => ({ igst: n, cgst: 0, sgst: 0 });
+    const big = {
+      number: 'CSD/26-27/0009',
+      date: '2026-10-02',
+      ctin: null,
+      pos: '29',
+      interState: true,
+      total: 3_54_000_00,
+      items: [{ rate: 18, taxable: 3_00_000_00, tax: igst(54_000_00) }],
+    };
+    const small = {
+      ...big,
+      number: 'CSD/26-27/0010',
+      total: 11_800_00,
+      items: [{ rate: 18, taxable: 10_000_00, tax: igst(1_800_00) }],
+    };
+    const j = buildGstr1({
+      gstin: '33AAACC1234D1Z5',
+      period: '2026-10',
+      invoices: [big, small],
+      creditNotes: [
+        { ...big, number: 'CN/26-27/0001' },
+        { ...small, number: 'CN/26-27/0002' },
+      ],
+      hsn: [],
+    });
+    expect(j.b2cl).toEqual([
+      { pos: '29', inv: [expect.objectContaining({ inum: 'CSD/26-27/0009', val: 354000 })] },
+    ]);
+    expect(j.cdnur).toEqual([expect.objectContaining({ typ: 'B2CL', nt_num: 'CN/26-27/0001' })]);
+    // The small invoice and its credit note cancel out in b2cs.
+    expect(j.b2cs).toEqual([]);
   });
 });

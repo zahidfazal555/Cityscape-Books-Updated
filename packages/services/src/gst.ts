@@ -6,6 +6,7 @@ import {
   buildGstr1,
   fromDecimalString,
   monthRange,
+  gstr1DueDate,
   returnDueDate,
   setOff,
   type Actor,
@@ -39,6 +40,8 @@ export interface ItcRow {
 }
 
 export interface AdvanceRow {
+  /** 11A: received, or released again by a credit note; 11B: applied to an invoice, or refunded. */
+  event: 'received' | 'released' | 'applied' | 'refunded';
   receiptNumber: string;
   receiptDate: IsoDate;
   proformaNumber: string;
@@ -61,9 +64,12 @@ export interface GstMonth {
   advancesAdjusted: Amounts;
   /** 4(A)(5): eligible input credit on bills of the month. */
   itc: TaxHeads;
-  /** Output tax after advances, before set-off. */
+  /** Output tax after advances, before set-off (never below zero per head). */
   liability: TaxHeads;
+  /** Credit brought forward from earlier months (unused ITC and excess credit-note tax). */
+  openingCredit: TaxHeads;
   setOff: SetOff;
+  gstr1DueDate: IsoDate;
   invoices: Gstr1Invoice[];
   creditNotes: Gstr1CreditNote[];
   hsn: Gstr1Hsn[];
@@ -82,16 +88,21 @@ const sumAmounts = (rows: readonly Amounts[]): Amounts =>
     taxable: 0,
     tax: ZERO_TAX,
   });
-const nonNegative = (t: TaxHeads): TaxHeads => ({
+const positive = (t: TaxHeads): TaxHeads => ({
   igst: Math.max(0, t.igst),
   cgst: Math.max(0, t.cgst),
   sgst: Math.max(0, t.sgst),
 });
+const negativePart = (t: TaxHeads): TaxHeads => ({
+  igst: Math.max(0, -t.igst),
+  cgst: Math.max(0, -t.cgst),
+  sgst: Math.max(0, -t.sgst),
+});
 
 /**
  * GST returns for one month (Req §4.15): GSTR-3B summary, GSTR-1 tables, Table 11A/11B
- * advances, ITC register and the GSTR-1 JSON. Built from the documents themselves; a month's
- * credit-ledger balance from earlier months is not carried in v1.
+ * advances, ITC register and the GSTR-1 JSON. Built from the documents and the dated advance
+ * history; unused credit and excess credit-note tax carry forward month to month (BUG-124).
  */
 export class GstService {
   constructor(private readonly pool: pg.Pool) {}
@@ -104,36 +115,37 @@ export class GstService {
       const invoices = await invoicesOf(c, from, to);
       const creditNotes = await creditNotesOf(c, from, to);
       const hsn = await hsnOf(c, from, to);
-      const received = await advancesOf(c, 'received', from, to, company.state_code);
-      const adjusted = await advancesOf(c, 'adjusted', from, to, company.state_code);
+      const advances = await advanceMovements(c, to, company.state_code);
       const itcRegister = await itcOf(c, from, to);
+      const chain = await creditChain(c, period, advances);
+      const received = advances
+        .filter((a) => a.period === period && a.sign === 1)
+        .map((a) => a.row);
+      const adjusted = advances
+        .filter((a) => a.period === period && a.sign === -1)
+        .map((a) => a.row);
       const invoicesTotal = sumAmounts(invoices.flatMap((i) => i.items));
       const creditNotesTotal = sumAmounts(creditNotes.flatMap((n) => n.items));
-      const advancesReceived = sumAmounts(received);
-      const advancesAdjusted = sumAmounts(adjusted);
-      const outward = {
-        taxable: invoicesTotal.taxable - creditNotesTotal.taxable,
-        tax: addHeads(invoicesTotal.tax, creditNotesTotal.tax, -1),
-      };
-      const itc = itcRegister
-        .filter((b) => b.eligible)
-        .reduce((s, b) => addHeads(s, b.tax), ZERO_TAX);
-      const liability = nonNegative(
-        addHeads(addHeads(outward.tax, advancesReceived.tax), advancesAdjusted.tax, -1),
-      );
       return {
         period,
         from,
         to,
         dueDate: returnDueDate(period),
-        outward,
+        gstr1DueDate: gstr1DueDate(period),
+        outward: {
+          taxable: invoicesTotal.taxable - creditNotesTotal.taxable,
+          tax: addHeads(invoicesTotal.tax, creditNotesTotal.tax, -1),
+        },
         invoicesTotal,
         creditNotesTotal,
-        advancesReceived,
-        advancesAdjusted,
-        itc,
-        liability,
-        setOff: setOff(liability, itc),
+        advancesReceived: sumAmounts(received),
+        advancesAdjusted: sumAmounts(adjusted),
+        itc: itcRegister
+          .filter((b) => b.eligible)
+          .reduce((sum, b) => addHeads(sum, b.tax), ZERO_TAX),
+        liability: chain.liability,
+        openingCredit: chain.opening,
+        setOff: chain.setOff,
         invoices,
         creditNotes,
         hsn,
@@ -246,6 +258,7 @@ async function creditNotesOf(
 /** HSN/SAC summary, net of credit notes issued in the month. */
 async function hsnOf(c: pg.PoolClient, from: IsoDate, to: IsoDate): Promise<Gstr1Hsn[]> {
   const { rows } = await c.query<{
+    b2b: boolean;
     hsn: string;
     rate: string;
     qty_milli: string;
@@ -254,20 +267,23 @@ async function hsnOf(c: pg.PoolClient, from: IsoDate, to: IsoDate): Promise<Gstr
     cgst: string;
     sgst: string;
   }>(
-    `SELECT sac_hsn AS hsn, gst_rate::text AS rate, (sum(sign * qty) * 1000)::bigint::text AS qty_milli,
+    `SELECT b2b, sac_hsn AS hsn, gst_rate::text AS rate, (sum(sign * qty) * 1000)::bigint::text AS qty_milli,
             sum(sign * taxable)::text AS taxable, sum(sign * igst)::text AS igst, sum(sign * cgst)::text AS cgst,
             sum(sign * sgst)::text AS sgst
        FROM (
-         SELECT 1 AS sign, l.* FROM invoice_line l JOIN invoice i ON i.id = l.invoice_id
+         SELECT 1 AS sign, (i.client_gstin IS NOT NULL) AS b2b, l.* FROM invoice_line l
+           JOIN invoice i ON i.id = l.invoice_id
           WHERE i.invoice_date BETWEEN $1 AND $2
          UNION ALL
-         SELECT -1 AS sign, l.* FROM invoice_line l JOIN credit_note n ON n.invoice_id = l.invoice_id
+         SELECT -1 AS sign, (i.client_gstin IS NOT NULL) AS b2b, l.* FROM invoice_line l
+           JOIN credit_note n ON n.invoice_id = l.invoice_id JOIN invoice i ON i.id = l.invoice_id
           WHERE n.cn_date BETWEEN $1 AND $2
        ) x
-      GROUP BY sac_hsn, gst_rate HAVING sum(sign * taxable) <> 0 ORDER BY sac_hsn, gst_rate`,
+      GROUP BY b2b, sac_hsn, gst_rate HAVING sum(sign * taxable) <> 0 ORDER BY b2b DESC, sac_hsn, gst_rate`,
     [from, to],
   );
   return rows.map((r) => ({
+    b2b: r.b2b,
     hsn: r.hsn,
     rate: Number(r.rate),
     qtyMilli: Number(r.qty_milli),
@@ -276,60 +292,160 @@ async function hsnOf(c: pg.PoolClient, from: IsoDate, to: IsoDate): Promise<Gstr
   }));
 }
 
+type Change = { date: IsoDate; held: boolean; why: AdvanceRow['event'] };
+
+/** One movement per month in which what is held at month end changes. */
+function monthlyMoves(changes: readonly Change[], base: Omit<AdvanceRow, 'event'>): Movement[] {
+  const out: Movement[] = [];
+  let held = false;
+  for (const period of [...new Set(changes.map((x) => x.date.slice(0, 7)))].sort()) {
+    const last = changes.filter((x) => x.date.slice(0, 7) === period).at(-1);
+    if (!last || last.held === held) continue;
+    held = last.held;
+    out.push({ period, sign: held ? 1 : -1, row: { event: last.why, ...base } });
+  }
+  return out;
+}
+
+interface Movement {
+  period: string;
+  /** +1 adds the advance's tax (11A), −1 takes it out (11B). */
+  sign: 1 | -1;
+  row: AdvanceRow;
+}
+
 /**
- * 11A ('received'): advances received in the month and not applied to an invoice in it.
- * 11B ('adjusted'): advances received before the month and applied to an invoice in it.
- * Tax = amount × r / (100 + r), pro rata over the proforma's rates (SPEC-FIXES A7).
+ * Advance tax movements up to `until`, from each advance's dated history (BUG-120): it is
+ * "held" from its receipt date, not held once applied to an invoice, held again when that
+ * invoice is cancelled, and gone once the receipt is deleted. A month reports the change in
+ * what is held at its end: received and applied in the same month nets to nothing.
  */
-async function advancesOf(
+async function advanceMovements(
   c: pg.PoolClient,
-  kind: 'received' | 'adjusted',
-  from: IsoDate,
-  to: IsoDate,
+  until: IsoDate,
   companyState: string,
-): Promise<AdvanceRow[]> {
-  const where =
-    kind === 'received'
-      ? `r.receipt_date BETWEEN $1 AND $2 AND (a.applied_at IS NULL OR a.applied_at > $2)`
-      : `a.applied_at BETWEEN $1 AND $2 AND r.receipt_date < $1`;
+): Promise<Movement[]> {
   const { rows } = await c.query<{
+    id: string;
+    amount: string;
     receipt_number: string;
     receipt_date: string;
-    proforma_number: string;
+    deleted_on: string | null;
     proforma_id: string;
+    proforma_number: string;
     pos: string;
-    amount: string;
   }>(
-    `SELECT r.number AS receipt_number, to_char(r.receipt_date, 'YYYY-MM-DD') AS receipt_date,
-            f.number AS proforma_number, f.id AS proforma_id, f.place_of_supply AS pos, a.amount::text
+    `SELECT a.id, a.amount::text, r.number AS receipt_number, to_char(r.receipt_date, 'YYYY-MM-DD') AS receipt_date,
+            to_char((r.deleted_at AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS deleted_on,
+            f.id AS proforma_id, f.number AS proforma_number, f.place_of_supply AS pos
        FROM receipt_allocation a JOIN receipt r ON r.id = a.receipt_id JOIN proforma f ON f.id = a.proforma_id
-      WHERE r.deleted_at IS NULL AND ${where}
-      ORDER BY r.receipt_date, r.number`,
-    [from, to],
+      WHERE r.receipt_date <= $1`,
+    [until],
   );
-  const out: AdvanceRow[] = [];
+  if (rows.length === 0) return [];
+  const events = await c.query<{
+    allocation_id: string;
+    kind: 'applied' | 'released';
+    date: string;
+  }>(
+    `SELECT allocation_id, kind, to_char(event_date, 'YYYY-MM-DD') AS date FROM advance_event
+      WHERE allocation_id = ANY($1::uuid[]) AND event_date <= $2 ORDER BY event_date, created_at`,
+    [rows.map((r) => r.id), until],
+  );
+  const shares = await c.query<{ proforma_id: string; rate: string; value: string }>(
+    `SELECT proforma_id, gst_rate::text AS rate, round(sum(qty * rate), 2)::text AS value FROM proforma_line
+      WHERE proforma_id = ANY($1::uuid[]) GROUP BY proforma_id, gst_rate ORDER BY gst_rate`,
+    [[...new Set(rows.map((r) => r.proforma_id))]],
+  );
+  const out: Movement[] = [];
   for (const r of rows) {
-    const shares = await c.query<{ rate: string; value: string }>(
-      `SELECT gst_rate::text AS rate, round(sum(qty * rate), 2)::text AS value FROM proforma_line
-        WHERE proforma_id = $1 GROUP BY gst_rate ORDER BY gst_rate`,
-      [r.proforma_id],
-    );
     const amount = p(r.amount);
     const t = advanceTax(
       amount,
-      shares.rows.map((s) => ({ rate: Number(s.rate), value: p(s.value) })),
+      shares.rows
+        .filter((x) => x.proforma_id === r.proforma_id)
+        .map((x) => ({ rate: Number(x.rate), value: p(x.value) })),
       r.pos !== companyState,
     );
-    out.push({
-      receiptNumber: r.receipt_number,
-      receiptDate: r.receipt_date,
-      proformaNumber: r.proforma_number,
-      amount,
-      taxable: t.taxable,
-      tax: t.tax,
-    });
+    const changes: Change[] = [
+      { date: r.receipt_date, held: true, why: 'received' },
+      ...events.rows
+        .filter((e) => e.allocation_id === r.id)
+        .map((e) => ({
+          date: e.date,
+          held: e.kind === 'released',
+          why: (e.kind === 'released' ? 'released' : 'applied') as AdvanceRow['event'],
+        })),
+      ...(r.deleted_on && r.deleted_on <= until
+        ? [{ date: r.deleted_on, held: false, why: 'refunded' as const }]
+        : []),
+    ];
+    out.push(
+      ...monthlyMoves(changes, {
+        receiptNumber: r.receipt_number,
+        receiptDate: r.receipt_date,
+        proformaNumber: r.proforma_number,
+        amount,
+        taxable: t.taxable,
+        tax: t.tax,
+      }),
+    );
   }
   return out;
+}
+
+/**
+ * Runs every month up to `period` (from the first month with any GST activity), carrying
+ * unused ITC and excess credit-note tax forward like the electronic credit ledger.
+ */
+async function creditChain(
+  c: pg.PoolClient,
+  period: string,
+  advances: readonly Movement[],
+): Promise<{ opening: TaxHeads; liability: TaxHeads; setOff: SetOff }> {
+  const { rows } = await c.query<{
+    period: string;
+    kind: string;
+    igst: string;
+    cgst: string;
+    sgst: string;
+  }>(
+    `SELECT to_char(i.invoice_date, 'YYYY-MM') AS period, 'out' AS kind, sum(l.igst)::text AS igst,
+            sum(l.cgst)::text AS cgst, sum(l.sgst)::text AS sgst
+       FROM invoice i JOIN invoice_line l ON l.invoice_id = i.id
+      WHERE to_char(i.invoice_date, 'YYYY-MM') <= $1 GROUP BY 1
+     UNION ALL
+     SELECT to_char(n.cn_date, 'YYYY-MM'), 'cn', sum(l.igst)::text, sum(l.cgst)::text, sum(l.sgst)::text
+       FROM credit_note n JOIN invoice_line l ON l.invoice_id = n.invoice_id
+      WHERE to_char(n.cn_date, 'YYYY-MM') <= $1 GROUP BY 1
+     UNION ALL
+     SELECT to_char(bill_date, 'YYYY-MM'), 'itc', sum(igst)::text, sum(cgst)::text, sum(sgst)::text
+       FROM bill WHERE deleted_at IS NULL AND itc_eligible AND to_char(bill_date, 'YYYY-MM') <= $1 GROUP BY 1`,
+    [period],
+  );
+  const months = [
+    ...new Set([...rows.map((r) => r.period), ...advances.map((a) => a.period), period]),
+  ]
+    .filter((m) => m <= period)
+    .sort();
+  let carry = ZERO_TAX;
+  let result = { opening: ZERO_TAX, liability: ZERO_TAX, setOff: setOff(ZERO_TAX, ZERO_TAX) };
+  for (const m of months) {
+    const of = (kind: string) => {
+      const r = rows.find((x) => x.period === m && x.kind === kind);
+      return r ? heads(r) : ZERO_TAX;
+    };
+    const adv = advances
+      .filter((a) => a.period === m)
+      .reduce((sum, a) => addHeads(sum, a.row.tax, a.sign), ZERO_TAX);
+    const raw = addHeads(addHeads(of('out'), of('cn'), -1), adv);
+    const credit = addHeads(addHeads(of('itc'), carry), negativePart(raw));
+    const liability = positive(raw);
+    const so = setOff(liability, credit);
+    result = { opening: carry, liability, setOff: so };
+    carry = so.carryForward;
+  }
+  return result;
 }
 
 /** FR-15.5: every live bill of the month, marked Eligible or No ITC. */

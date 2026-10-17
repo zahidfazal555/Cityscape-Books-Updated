@@ -19,6 +19,12 @@ import { companyRow, isoDate, parse, tenantOf as ctx } from './validation.js';
 
 /** Cash in hand, bank current account, UPI (chart of accounts 0001; FR-13.1). */
 export const MONEY_ACCOUNTS = ['1000', '1010', '1020'] as const;
+/** Lines listed per register request; the closing balance is computed over all of them. */
+export const REGISTER_LIMIT = 5000;
+
+/** Lines whose journal was reversed, or that are a reversal: they need no statement tick (BUG-129). */
+const REVERSED = `(j.reverses_journal_id IS NOT NULL
+  OR EXISTS (SELECT 1 FROM journal rj WHERE rj.reverses_journal_id = j.id))`;
 export type MoneyAccount = (typeof MONEY_ACCOUNTS)[number];
 
 export interface MoneyAccountCard {
@@ -33,6 +39,10 @@ export interface RegisterLine {
   date: IsoDate;
   particulars: string;
   sourceType: string;
+  /** Receipt / payment / expense mode (bank, cheque, UPI, cash), where the document has one. */
+  mode: string | null;
+  /** A reversed entry or its reversal: the pair cancels and needs no statement match. */
+  reversed: boolean;
   projectCode: string | null;
   moneyIn: Paise;
   moneyOut: Paise;
@@ -48,6 +58,8 @@ export interface Register {
   closing: Paise;
   lines: RegisterLine[];
   unmatched: number;
+  /** True when the range has more lines than are listed; the closing balance is still exact. */
+  truncated: boolean;
 }
 
 const rangeSchema = z.object({ from: isoDate.optional(), to: isoDate.optional() });
@@ -75,9 +87,11 @@ export class BankingService {
         unmatched: string;
       }>(
         `SELECT a.code, a.name, coalesce(sum(l.debit - l.credit), 0)::text AS balance,
-                count(l.id) FILTER (WHERE l.id IS NOT NULL AND m.journal_line_id IS NULL)::text AS unmatched
+                count(l.id) FILTER (WHERE l.id IS NOT NULL AND m.journal_line_id IS NULL AND NOT ${REVERSED})::text
+                  AS unmatched
            FROM account a
            LEFT JOIN journal_line l ON l.account_id = a.id
+           LEFT JOIN journal j ON j.id = l.journal_id
            LEFT JOIN bank_match m ON m.journal_line_id = l.id
           WHERE a.code = ANY($1::text[])
           GROUP BY a.code, a.name ORDER BY a.code`,
@@ -112,30 +126,17 @@ export class BankingService {
         [code, from],
       );
       const opening = fromDecimalString(open.rows[0]?.opening ?? '0');
-      const { rows } = await c.query<{
-        line_id: string;
-        date: string;
-        narration: string;
-        source_type: string;
-        project_code: string | null;
-        debit: string;
-        credit: string;
-        matched: boolean;
-      }>(
-        `SELECT l.id AS line_id, to_char(j.txn_date, 'YYYY-MM-DD') AS date, j.narration, j.source_type,
-                p.code AS project_code, l.debit::text, l.credit::text, (m.journal_line_id IS NOT NULL) AS matched
-           FROM journal_line l
-           JOIN account a ON a.id = l.account_id
-           JOIN journal j ON j.id = l.journal_id
-           LEFT JOIN project p ON p.id = l.project_id
-           LEFT JOIN bank_match m ON m.journal_line_id = l.id
-          WHERE a.code = $1 AND j.txn_date BETWEEN $2 AND $3
-          ORDER BY j.txn_date, j.posted_at, l.id
-          LIMIT 5000`,
-        [code, from, to],
+      const rows = await registerRows(c, code, from, to);
+      // BUG-127: the closing balance is summed in SQL, so a long range is never wrong, only shortened.
+      const close = await c.query<{ closing: string }>(
+        `SELECT coalesce(sum(l.debit - l.credit), 0)::text AS closing
+           FROM journal_line l JOIN account a ON a.id = l.account_id JOIN journal j ON j.id = l.journal_id
+          WHERE a.code = $1 AND j.txn_date <= $2`,
+        [code, to],
       );
+      const truncated = rows.length > REGISTER_LIMIT;
       let balance = opening;
-      const lines = rows.map((x): RegisterLine => {
+      const lines = rows.slice(0, REGISTER_LIMIT).map((x): RegisterLine => {
         const moneyIn = fromDecimalString(x.debit);
         const moneyOut = fromDecimalString(x.credit);
         balance += moneyIn - moneyOut;
@@ -144,6 +145,8 @@ export class BankingService {
           date: x.date,
           particulars: x.narration,
           sourceType: x.source_type,
+          mode: x.mode,
+          reversed: x.reversed,
           projectCode: x.project_code,
           moneyIn,
           moneyOut,
@@ -156,9 +159,10 @@ export class BankingService {
         from,
         to,
         opening,
-        closing: balance,
+        closing: fromDecimalString(close.rows[0]?.closing ?? '0'),
         lines,
-        unmatched: lines.filter((l) => !l.matched).length,
+        unmatched: lines.filter((l) => !l.matched && !l.reversed).length,
+        truncated,
       };
     });
   }
@@ -207,16 +211,18 @@ export class BankingService {
       const accountId = acct.rows[0]?.id;
       if (!accountId) throw new DomainError('NOT_FOUND', 'Account not found.');
       // Lock the account row: two concurrent entries cannot both find "no opening yet".
+      // Only the live opening is replaced: never an earlier reversal of it (BUG-125).
       await c.query('SELECT 1 FROM account WHERE id = $1 FOR UPDATE', [accountId]);
       const prev = await c.query<{ id: string; date: string }>(
         `SELECT j.id, to_char(j.txn_date, 'YYYY-MM-DD') AS date FROM journal j
-          WHERE j.source_type = 'opening_balance' AND j.source_id = $1
+          WHERE j.source_type = 'opening_balance' AND j.source_id = $1 AND j.reverses_journal_id IS NULL
             AND NOT EXISTS (SELECT 1 FROM journal r WHERE r.reverses_journal_id = j.id)`,
         [accountId],
       );
       for (const p of prev.rows) {
         assertNotLocked(p.date, company.lock_date, 'asOf');
-        await reverseJournal(c, p.id, data.asOf, `Opening balance of ${data.code} replaced`);
+        // On the old opening's own date (BUG-126): the periods in between never show both.
+        await reverseJournal(c, p.id, p.date, `Opening balance of ${data.code} replaced`);
       }
       if (data.amount !== 0) {
         const debit = data.amount > 0;
@@ -297,4 +303,45 @@ export function fyStart(date: IsoDate, startMonth: number): IsoDate {
   const fy = financialYear(date, startMonth);
   const y = 2000 + Number(fy.slice(0, 2));
   return `${y}-${String(startMonth).padStart(2, '0')}-01`;
+}
+
+interface RegisterRow {
+  line_id: string;
+  date: string;
+  narration: string;
+  source_type: string;
+  project_code: string | null;
+  debit: string;
+  credit: string;
+  matched: boolean;
+  reversed: boolean;
+  mode: string | null;
+}
+
+/** The register's lines in posting order, one more than the limit to detect truncation. */
+async function registerRows(
+  c: pg.PoolClient,
+  code: MoneyAccount,
+  from: IsoDate,
+  to: IsoDate,
+): Promise<RegisterRow[]> {
+  const { rows } = await c.query<RegisterRow>(
+    `SELECT l.id AS line_id, to_char(j.txn_date, 'YYYY-MM-DD') AS date, j.narration, j.source_type,
+                p.code AS project_code, l.debit::text, l.credit::text, (m.journal_line_id IS NOT NULL) AS matched,
+                ${REVERSED} AS reversed,
+                coalesce(rc.mode, vp.mode, ex.mode) AS mode
+           FROM journal_line l
+           JOIN account a ON a.id = l.account_id
+           JOIN journal j ON j.id = l.journal_id
+           LEFT JOIN project p ON p.id = l.project_id
+           LEFT JOIN bank_match m ON m.journal_line_id = l.id
+           LEFT JOIN receipt rc ON j.source_type = 'receipt' AND rc.id = j.source_id
+           LEFT JOIN vendor_payment vp ON j.source_type = 'vendor_payment' AND vp.id = j.source_id
+           LEFT JOIN expense ex ON j.source_type = 'expense' AND ex.id = j.source_id
+          WHERE a.code = $1 AND j.txn_date BETWEEN $2 AND $3
+          ORDER BY j.txn_date, j.posted_at, l.id
+          LIMIT ${REGISTER_LIMIT + 1}`,
+    [code, from, to],
+  );
+  return rows;
 }
