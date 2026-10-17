@@ -15,8 +15,15 @@ const schema = z.object({
       'JWT_SECRET must be base64 of ≥ 32 bytes',
     ),
   APP_URL: z.string().url(),
-  /** 'outbox' keeps mail in memory (dev/test only). Production needs a real provider. */
-  MAIL_MODE: z.enum(['outbox']).default('outbox'),
+  /** 'outbox' keeps mail in memory (dev/test only); 'smtp' sends through SMTP_URL. */
+  MAIL_MODE: z.enum(['outbox', 'smtp']).default('outbox'),
+  /** smtps://user:pass@host:465 (implicit TLS) or smtp://user:pass@host:587 (STARTTLS required). */
+  SMTP_URL: z
+    .string()
+    .regex(/^smtps?:\/\//, 'SMTP_URL must start with smtps:// or smtp://')
+    .optional(),
+  /** Sender, e.g. "Cityscape Books <books@cityscapedecors.in>". */
+  MAIL_FROM: z.string().min(3).optional(),
   /** Number of reverse proxies in front of the app, for client IP extraction. */
   TRUSTED_PROXIES: z.coerce.number().int().min(0).max(5).default(1),
   /** Only the e2e suite sets this: it runs a production build with the in-memory outbox. */
@@ -53,6 +60,9 @@ function assertProduction(e: Env): void {
     throw new Error(
       'Invalid configuration — CSD_LOGIN_LIMIT_PER_MINUTE cannot exceed 10 in production.',
     );
+  }
+  if (e.MAIL_MODE === 'smtp' && (!e.SMTP_URL || !e.MAIL_FROM)) {
+    throw new Error('Invalid configuration — MAIL_MODE=smtp needs SMTP_URL and MAIL_FROM.');
   }
   if (e.NODE_ENV === 'production' && !e.ATTACHMENT_DIR) {
     throw new Error('Invalid configuration — ATTACHMENT_DIR is required in production.');

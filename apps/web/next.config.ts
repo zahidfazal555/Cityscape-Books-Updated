@@ -4,7 +4,7 @@ const config: NextConfig = {
   // Workspace packages ship TypeScript source.
   transpilePackages: ['@csd/core', '@csd/db', '@csd/services'],
   // Native and Node-only modules stay out of the bundle.
-  serverExternalPackages: ['pg', '@node-rs/argon2'],
+  serverExternalPackages: ['pg', '@node-rs/argon2', 'nodemailer'],
   poweredByHeader: false,
   // Workspace packages use NodeNext-style `./x.js` imports of `.ts` files.
   webpack(cfg, { isServer }) {
@@ -16,6 +16,7 @@ const config: NextConfig = {
         ...(Array.isArray(cfg.externals) ? cfg.externals : []),
         'pg',
         '@node-rs/argon2',
+        'nodemailer',
       ];
     return cfg;
   },

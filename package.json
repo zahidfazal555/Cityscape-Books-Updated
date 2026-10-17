@@ -15,7 +15,9 @@
     "test:unit": "pnpm --filter @csd/core test",
     "test:db": "pnpm --filter @csd/db test",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
-    "test:services": "pnpm --filter @csd/services test"
+    "test:services": "pnpm --filter @csd/services test",
+    "jobs": "tsx packages/services/src/jobs-cli.ts",
+    "verify:books": "tsx packages/services/src/jobs-cli.ts verify-books"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
