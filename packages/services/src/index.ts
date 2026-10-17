@@ -30,3 +30,8 @@ export * from './money-entries.js';
 export * from './payroll.js';
 export * from './labour.js';
 export * from './inventory.js';
+export * from './tickets.js';
+export * from './visits.js';
+export * from './warranty.js';
+export * from './kb.js';
+export * from './support-dashboard.js';

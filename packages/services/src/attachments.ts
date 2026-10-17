@@ -90,28 +90,43 @@ interface AttachmentRow {
   content_type: AllowedType;
   uploaded_by: string;
   project_id: string | null;
+  /** Set when the photo belongs to a site visit (before/after). */
+  visit_project_id: string | null;
+  visit_engineer_id: string | null;
 }
 
-/** Linked photos follow the expense's project scope; unattached ones are the uploader's. */
+/**
+ * Linked photos follow the expense's project scope, visit photos the ticket's project (or the
+ * visit's engineer); unattached ones are the uploader's.
+ */
 async function visibleAttachment(
   c: pg.PoolClient,
   actor: Actor,
   id: string,
 ): Promise<AttachmentRow> {
   const { rows } = await c.query<AttachmentRow>(
-    `SELECT a.storage_key, a.thumbnail_key, a.content_type, a.uploaded_by, e.project_id
+    `SELECT a.storage_key, a.thumbnail_key, a.content_type, a.uploaded_by, e.project_id,
+            t.project_id AS visit_project_id, sv.engineer_id AS visit_engineer_id
        FROM attachment a LEFT JOIN expense e ON e.attachment_id = a.id AND e.deleted_at IS NULL
+       LEFT JOIN visit_photo vp ON vp.attachment_id = a.id
+       LEFT JOIN site_visit sv ON sv.id = vp.visit_id
+       LEFT JOIN ticket t ON t.id = sv.ticket_id
       WHERE a.id = $1`,
     [id],
   );
   const r = rows[0];
-  const allowed =
-    r !== undefined &&
-    (r.project_id === null
-      ? r.uploaded_by === actor.userId
-      : can(actor, 'expenses', 'view', r.project_id));
+  const allowed = r !== undefined && mayView(actor, r);
   if (!r || !allowed) throw new DomainError('NOT_FOUND', 'File not found.');
   return r;
+}
+
+function mayView(actor: Actor, r: AttachmentRow): boolean {
+  if (r.visit_project_id !== null)
+    return (
+      r.visit_engineer_id === actor.userId || can(actor, 'tickets', 'view', r.visit_project_id)
+    );
+  if (r.project_id !== null) return can(actor, 'expenses', 'view', r.project_id);
+  return r.uploaded_by === actor.userId;
 }
 
 /** Photos uploaded but not attached to an expense yet, per user (bounds disk use; BUG-106). */
@@ -123,7 +138,8 @@ async function assertUnclaimedQuota(c: pg.PoolClient): Promise<void> {
   const { rows } = await c.query<{ n: string }>(
     `SELECT count(*)::text AS n FROM attachment a
       WHERE a.uploaded_by = app_user_id() AND a.created_at > now() - interval '7 days'
-        AND NOT EXISTS (SELECT 1 FROM expense e WHERE e.attachment_id = a.id)`,
+        AND NOT EXISTS (SELECT 1 FROM expense e WHERE e.attachment_id = a.id)
+        AND NOT EXISTS (SELECT 1 FROM visit_photo vp WHERE vp.attachment_id = a.id)`,
   );
   if (Number(rows[0]?.n ?? 0) >= MAX_UNCLAIMED_UPLOADS) {
     throw new DomainError(
@@ -145,7 +161,9 @@ export async function claimAttachment(
   author: string | null = null,
 ): Promise<void> {
   const { rows } = await c.query<{ uploaded_by: string; used_by: string | null }>(
-    `SELECT a.uploaded_by, (SELECT e.id FROM expense e WHERE e.attachment_id = a.id) AS used_by
+    `SELECT a.uploaded_by,
+            coalesce((SELECT e.id FROM expense e WHERE e.attachment_id = a.id),
+                     (SELECT vp.visit_id FROM visit_photo vp WHERE vp.attachment_id = a.id)) AS used_by
        FROM attachment a WHERE a.id = $1`,
     [attachmentId],
   );
