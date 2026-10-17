@@ -62,7 +62,10 @@ export function TicketQueue({
   handlers,
   warranty,
   canLog,
+  now: nowIso,
 }: {
+  /** Server time (BUG-171). */
+  now: string;
   tickets: TicketSummary[];
   counts: Counts;
   view: TicketView;
@@ -73,7 +76,7 @@ export function TicketQueue({
 }) {
   const router = useRouter();
   const [logging, setLogging] = useState(false);
-  const now = new Date();
+  const now = new Date(nowIso);
   return (
     <>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -140,7 +143,11 @@ export function TicketQueue({
                 <span>
                   <Pill tone={STATUS_TONE[t.status]}>{STATUS_LABEL[t.status]}</Pill>
                 </span>
-                <span className={`text-xs ${TONE_TEXT[sla.tone]}`}>
+                <span className={`text-xs ${TONE_TEXT[t.breached ? 'red' : sla.tone]}`}>
+                  {/* BUG-166: a breach (even a late first response) always shows. */}
+                  {t.firstResponseAt && new Date(t.firstResponseAt) > new Date(t.respDue)
+                    ? 'Response missed · '
+                    : ''}
                   {!t.firstResponseAt && open ? 'No response · ' : ''}
                   {sla.text}
                 </span>

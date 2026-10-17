@@ -11,7 +11,8 @@ export interface SupportDashboard {
   responseSlaMetPct: number | null;
   resolutionSlaMetPct: number | null;
   avgRating: number | null;
-  serviceCost: { approved: Paise; pending: Paise };
+  /** Null without the expenses right (the card is hidden). */
+  serviceCost: { approved: Paise; pending: Paise } | null;
   byType: { key: string; count: number }[];
   byStatus: { key: string; count: number }[];
   byProject: { key: string; count: number }[];
@@ -38,7 +39,7 @@ const costsFor = (actor: Actor, r: { approved: string; pending: string } | undef
         approved: fromDecimalString(r?.approved ?? '0'),
         pending: fromDecimalString(r?.pending ?? '0'),
       }
-    : { approved: 0, pending: 0 };
+    : null;
 
 const round1 = (v: string | null) => (v === null ? null : Math.round(Number(v) * 10) / 10);
 

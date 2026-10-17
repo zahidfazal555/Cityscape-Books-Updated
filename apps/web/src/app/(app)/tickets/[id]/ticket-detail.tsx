@@ -6,6 +6,7 @@ import { useState } from 'react';
 import {
   TICKET_PRIORITIES,
   TICKET_STATUSES,
+  canMoveTicket,
   fillTemplate,
   formatDate,
   todayIn,
@@ -39,6 +40,8 @@ import { TONE_TEXT } from '../ticket-queue';
 import { VisitPill } from '../visits-table';
 
 type Kind = 'reply' | 'call' | 'note';
+/** Server limit on a thread entry (tickets.ts eventSchema). */
+const MAX_EVENT = 4000;
 const KIND_LABEL: Record<Kind, string> = {
   reply: 'Reply to client',
   call: 'Call log',
@@ -77,7 +80,10 @@ export function TicketDetailView({
   guides,
   candidates,
   rights,
+  now,
 }: {
+  /** Server time, so the SLA text renders the same on the server and the client (BUG-171). */
+  now: string;
   ticket: TicketDetail;
   visits: SiteVisit[];
   billing: TicketBilling;
@@ -94,8 +100,10 @@ export function TicketDetailView({
     ticket: t.number,
     project: `${t.projectCode} · ${t.projectName}`,
     engineer,
-    date: formatDate(visits.find((v) => v.status === 'scheduled')?.visitDate ?? todayIn()),
   };
+  // {date} is the visit date; with no visit scheduled it stays as typed (BUG-172).
+  const visitDate = visits.find((v) => v.status === 'scheduled')?.visitDate;
+  if (visitDate) Object.assign(values, { date: formatDate(visitDate) });
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
       <div className="flex min-w-0 flex-col gap-4">
@@ -132,7 +140,7 @@ export function TicketDetailView({
       </div>
       <aside className="flex flex-col gap-3">
         <Properties t={t} handlers={handlers} edit={rights.edit} />
-        <SlaCard t={t} />
+        <SlaCard t={t} now={now} />
         <Card title="Client & site">
           <div className="font-medium">{t.clientName}</div>
           <div className="text-muted">
@@ -153,7 +161,7 @@ export function TicketDetailView({
         </Card>
         <Visits t={t} visits={visits} engineers={engineers} edit={rights.edit} />
         <Billing t={t} billing={billing} candidates={candidates} rights={rights} />
-        <Rating t={t} edit={rights.edit} />
+        <Rating key={`${t.status}:${t.rating ?? ''}`} t={t} edit={rights.edit} />
       </aside>
     </div>
   );
@@ -245,10 +253,16 @@ function Composer({
         onChange={(e) => setBody(e.target.value)}
         placeholder={kind === 'note' ? 'Only staff see internal notes.' : 'What was said'}
       />
+      {body.length > MAX_EVENT ? (
+        <p className="text-xs text-danger">
+          {body.length.toLocaleString('en-IN')} / {MAX_EVENT.toLocaleString('en-IN')} characters:
+          shorten it, or send the guide separately.
+        </p>
+      ) : null}
       <FormError message={error} />
       <div className="flex justify-end">
         <Button
-          disabled={busy || !body.trim()}
+          disabled={busy || !body.trim() || body.length > MAX_EVENT}
           onClick={() =>
             void run(
               () =>
@@ -282,8 +296,10 @@ function Properties({
   const { busy, error, run } = useAction();
   const patch = (body: Record<string, unknown>) =>
     void run(() => apiFetch(`/api/v1/tickets/${t.id}`, { method: 'PATCH', body }));
-  // "Visit scheduled" is set by scheduling a visit, never picked here.
-  const statuses = TICKET_STATUSES.filter((s) => s !== 'visit_scheduled' || t.status === s);
+  // BUG-165: offer only the moves the server allows; "Visit scheduled" is left by completing or
+  // cancelling the visit.
+  const statuses = TICKET_STATUSES.filter((s) => s === t.status || canMoveTicket(t.status, s));
+  const locked = t.status === 'visit_scheduled';
   return (
     <Card title="Properties">
       <div className="flex flex-col gap-2">
@@ -291,7 +307,7 @@ function Properties({
           <select
             id="p-status"
             className={selectCls}
-            disabled={!edit || busy}
+            disabled={!edit || busy || locked}
             value={t.status}
             onChange={(e) => patch({ status: e.target.value as TicketStatus })}
           >
@@ -301,6 +317,9 @@ function Properties({
               </option>
             ))}
           </select>
+          {locked ? (
+            <span className="text-xs text-muted">Complete or cancel the visit to change it.</span>
+          ) : null}
         </Field>
         <Field label="Priority" htmlFor="p-priority">
           <select
@@ -339,8 +358,8 @@ function Properties({
   );
 }
 
-function SlaCard({ t }: { t: TicketDetail }) {
-  const now = new Date();
+function SlaCard({ t, now: nowIso }: { t: TicketDetail; now: string }) {
+  const now = new Date(nowIso);
   const resp = slaText(t.createdAt, t.respDue, t.firstResponseAt, now);
   const res = slaText(t.createdAt, t.resolveDue, t.resolvedAt, now, 'Resolved');
   return (
@@ -544,12 +563,12 @@ function Billing({
       </label>
       {t.chargeable ? (
         <div className="my-2 flex flex-wrap gap-3 text-xs">
-          {rights.quotes ? (
+          {rights.edit && rights.quotes ? (
             <Link href="/quotes" className="text-primary">
               Create quotation →
             </Link>
           ) : null}
-          {rights.invoices ? (
+          {rights.edit && rights.invoices ? (
             <Link href="/invoices" className="text-primary">
               Raise tax invoice →
             </Link>

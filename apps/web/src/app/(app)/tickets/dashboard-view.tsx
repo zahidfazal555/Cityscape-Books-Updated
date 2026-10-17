@@ -52,10 +52,14 @@ export function SupportDashboardView({ d }: { d: SupportDashboard }) {
           ['Response SLA met', pct(d.responseSlaMetPct)],
           ['Resolution SLA met', pct(d.resolutionSlaMetPct)],
           ['Customer rating', d.avgRating === null ? '—' : `${d.avgRating} / 5`],
-          [
-            'Service cost charged to projects',
-            `${rupees(d.serviceCost.approved)}${d.serviceCost.pending > 0 ? ` (+${rupees(d.serviceCost.pending)} pending)` : ''}`,
-          ],
+          ...(d.serviceCost
+            ? [
+                [
+                  'Service cost charged to projects',
+                  `${rupees(d.serviceCost.approved)}${d.serviceCost.pending > 0 ? ` (+${rupees(d.serviceCost.pending)} pending)` : ''}`,
+                ] as const,
+              ]
+            : []),
         ]}
       />
       <div className="grid gap-4 lg:grid-cols-3">

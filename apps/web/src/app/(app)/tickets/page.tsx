@@ -71,6 +71,7 @@ async function queue(actor: Awaited<ReturnType<typeof getSession>>['actor'], raw
       handlers={handlers}
       warranty={warranty}
       canLog={can(actor, 'tickets', 'edit')}
+      now={new Date().toISOString()}
     />
   );
 }

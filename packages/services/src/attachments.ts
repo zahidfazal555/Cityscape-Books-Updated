@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { DomainError, assertId, authorize, can, canApprove, type Actor } from '@csd/core';
+import { DomainError, assertId, can, canApprove, type Actor } from '@csd/core';
 import { withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import type { BlobStore } from './blob-store.js';
@@ -20,7 +20,9 @@ export class AttachmentsService {
 
   /** Stores a JPEG, PNG or PDF (≤ 10 MB, type sniffed, photo metadata removed). */
   async upload(actor: Actor, raw: Buffer): Promise<{ id: string; contentType: AllowedType }> {
-    authorize(actor, 'expenses', 'edit');
+    // Bill photos need expenses edit; visit photos need tickets edit or a visit assigned to the
+    // uploader (BUG-170), checked below inside the transaction.
+    const byRight = can(actor, 'expenses', 'edit') || can(actor, 'tickets', 'edit');
     if (raw.byteLength === 0) throw new DomainError('VALIDATION', 'The file is empty.', 'file');
     if (raw.byteLength > MAX_UPLOAD_BYTES)
       throw new DomainError('TOO_LARGE', 'The file is larger than 10 MB.');
@@ -32,6 +34,7 @@ export class AttachmentsService {
     // Row and file together: the file is written inside the transaction, so a failed insert
     // leaves no file and a failed write leaves no row (BUG-106).
     await withTenant(this.pool, ctx(actor), async (c) => {
+      if (!byRight) await assertHasVisit(c);
       await assertUnclaimedQuota(c);
       await c.query(
         `INSERT INTO attachment (id, company_id, storage_key, thumbnail_key, content_type, size_bytes, sha256,
@@ -129,8 +132,16 @@ function mayView(actor: Actor, r: AttachmentRow): boolean {
   return r.uploaded_by === actor.userId;
 }
 
+async function assertHasVisit(c: pg.PoolClient): Promise<void> {
+  const { rows } = await c.query(
+    `SELECT 1 FROM site_visit WHERE engineer_id = app_user_id() AND status = 'scheduled' LIMIT 1`,
+  );
+  if (rows.length === 0) throw new DomainError('FORBIDDEN', 'You do not have access to this.');
+}
+
 /** Photos uploaded but not attached to an expense yet, per user (bounds disk use; BUG-106). */
-export const MAX_UNCLAIMED_UPLOADS = 20;
+// A service visit takes up to 10 before + 10 after + 1 bill photo before it is saved (BUG-167).
+export const MAX_UNCLAIMED_UPLOADS = 30;
 
 async function assertUnclaimedQuota(c: pg.PoolClient): Promise<void> {
   // One upload per user at a time, so concurrent uploads cannot all slip under the quota.

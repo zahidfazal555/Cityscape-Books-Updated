@@ -182,9 +182,13 @@ export class AuthService {
   /**
    * Verifies a 15-minute access token, confirms its session is live and not idle, and records
    * activity. Only real requests count as activity, so a client refreshing on a timer is still
-   * signed out after 30 minutes idle.
+   * signed out after 30 minutes idle. `background` requests (the notification poll) never count
+   * (BUG-163), or an open tab would keep the session alive for ever (H1).
    */
-  async authenticate(accessToken: string): Promise<{ claims: AccessClaims; actor: Actor }> {
+  async authenticate(
+    accessToken: string,
+    opts: { background?: boolean } = {},
+  ): Promise<{ claims: AccessClaims; actor: Actor }> {
     const claims = await this.verifyAccess(accessToken);
     const ctx = { companyId: claims.companyId, userId: claims.userId };
     const actor = await withTenant(this.deps.pool, ctx, async (c) => {
@@ -195,10 +199,11 @@ export class AuthService {
       );
       const lastSeen = live.rows[0]?.last_seen_at;
       if (!lastSeen || this.isIdle(lastSeen)) throw unauth();
-      await c.query(
-        `UPDATE session SET last_seen_at = now() WHERE id = $1 AND last_seen_at < now() - interval '1 minute'`,
-        [claims.sessionId],
-      );
+      if (!opts.background)
+        await c.query(
+          `UPDATE session SET last_seen_at = now() WHERE id = $1 AND last_seen_at < now() - interval '1 minute'`,
+          [claims.sessionId],
+        );
       return loadActor(c, claims.userId);
     });
     if (!actor.active) throw unauth();

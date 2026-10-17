@@ -131,7 +131,9 @@ export function apiUpload(
 async function authenticated(req: NextRequest): Promise<Actor> {
   const token = req.cookies.get(COOKIE.access)?.value ?? bearer(req);
   if (!token) throw new DomainError('UNAUTHENTICATED', 'Please sign in.');
-  const { actor } = await services().auth.authenticate(token);
+  // The notification poll marks itself: it must not count as activity (BUG-163).
+  const background = req.headers.get('x-csd-background') === '1';
+  const { actor } = await services().auth.authenticate(token, { background });
   limits.api.take(actor.userId);
   return actor;
 }

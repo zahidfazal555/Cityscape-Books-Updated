@@ -307,7 +307,7 @@ describe('tickets (FR-19)', () => {
 
   it('the dashboard counts response SLA and service cost', async () => {
     const d = await dashboard.get(owner);
-    expect(d.serviceCost.pending).toBe(1_200_00);
+    expect(d.serviceCost?.pending).toBe(1_200_00);
     expect(d.byType.find((x) => x.key === 'snag')?.count).toBeGreaterThanOrEqual(2);
     expect(d.responseSlaMetPct).not.toBeNull();
     expect(d.workload.find((w) => w.name === 'Asst Manager')).toBeTruthy();
@@ -531,5 +531,27 @@ describe('review regressions (PR 16)', () => {
     expect(ev.findIndex((b) => b.startsWith('Visit completed'))).toBeLessThan(
       ev.findIndex((b) => b.startsWith('Work done')),
     );
+  });
+});
+
+describe('review regressions (PR 17)', () => {
+  it('BUG-170: a site engineer with a scheduled visit can upload photos even without expenses edit', async () => {
+    const eng = actorFor(f, await makeUser(f.companyId, 'site', 'Narrow'), 'site', []);
+    const narrow = { ...eng, rights: { ...eng.rights, expenses: 'none' as const } };
+    await expect(attachments.upload(narrow, JPEG)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    const t = await tickets.create(asst, {
+      projectId,
+      type: 'service',
+      subject: 'Narrow',
+      channel: 'phone',
+    });
+    await visits.schedule(asst, t.id, {
+      visitDate: '2099-12-31',
+      slot: 'morning',
+      engineerId: eng.userId,
+    });
+    await expect(attachments.upload(narrow, JPEG)).resolves.toMatchObject({
+      contentType: 'image/jpeg',
+    });
   });
 });
