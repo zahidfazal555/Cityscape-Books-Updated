@@ -45,10 +45,10 @@ const GROUPS: NavGroup[] = [
   {
     label: 'Accounts',
     items: [
-      { label: 'Cash, bank & UPI', href: '/banking', module: 'banking', ready: false },
-      { label: 'Outstanding', href: '/outstanding', module: 'outstanding', ready: false },
-      { label: 'GST returns', href: '/gst', module: 'gst', ready: false },
-      { label: 'Reports', href: '/reports', module: 'reports', ready: false },
+      { label: 'Cash, bank & UPI', href: '/banking', module: 'banking', ready: true },
+      { label: 'Outstanding', href: '/outstanding', module: 'outstanding', ready: true },
+      { label: 'GST returns', href: '/gst', module: 'gst', ready: true },
+      { label: 'Reports', href: '/reports', module: 'reports', ready: true },
     ],
   },
   {

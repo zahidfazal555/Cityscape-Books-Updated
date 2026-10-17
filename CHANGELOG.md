@@ -20,6 +20,9 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
   receivables and payables with ageing; GST returns (GSTR-3B summary with set-off, GSTR-1 tables and
   JSON, Table 11A/11B, ITC register); reports (project income and expenses, P&L, category pivot,
   trial balance) with audited CSV exports.
+- Accounts screens: account cards and registers with statement ticks and opening balances, spending by
+  staff; outstanding tabs with the ageing bar; GST month view with 3B, GSTR-1, HSN, 11A/11B and the ITC
+  register; report tabs with CSV.
 
 ### Changed
 - H2 approvals are keyed to the Owner role: granting `approvals = full` to another user no longer
