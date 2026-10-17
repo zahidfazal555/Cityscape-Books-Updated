@@ -418,3 +418,87 @@ describe('inventory: material purchase tracking (FR-18)', () => {
     expect(audit).toHaveLength(1);
   });
 });
+
+describe('review regressions (PR 14)', () => {
+  it('BUG-142: a pending wage blocks a move, and wages on a project the worker left cannot be reversed', async () => {
+    const { id } = await payroll.createEmployee(owner, {
+      kind: 'daily',
+      name: 'Moving Worker',
+      roleTitle: 'Helper',
+      projectId,
+      rate: 1_000_00,
+    });
+    await labour.markAttendance(owner, id, { workDate: '2026-10-02' });
+    const pending = await labour.payWages(admin, {
+      employeeId: id,
+      payDate: '2026-10-16',
+      amount: 1_000_00,
+      mode: 'cash',
+    });
+    await expect(
+      payroll.updateEmployee(owner, id, { projectId: otherProject }),
+    ).rejects.toMatchObject({
+      code: 'CONFLICT',
+    });
+    await labour.approvePayment(owner, 'wage', pending.id);
+    await payroll.updateEmployee(owner, id, { projectId: otherProject });
+    await expect(labour.removePayment(owner, 'wage', pending.id)).rejects.toMatchObject({
+      code: 'CONFLICT',
+    });
+    await payroll.updateEmployee(owner, id, { projectId });
+    await labour.removePayment(owner, 'wage', pending.id);
+    expect((await labour.worker(owner, id)).balance).toBe(1_000_00);
+  });
+
+  it('BUG-143: reading salaries and payslips writes audit rows; the run list carries no payslips', async () => {
+    const count = async (entity: string) =>
+      Number(
+        (
+          await superPool.query<{ n: string }>(
+            `SELECT count(*)::text AS n FROM audit_log WHERE company_id = $1 AND action = 'view' AND entity = $2`,
+            [f.companyId, entity],
+          )
+        ).rows[0]!.n,
+      );
+    const before = await count('payslip');
+    const staffBefore = await count('employee_salaries');
+    const runs = await payroll.runs(owner);
+    expect(runs.every((r) => r.lines.length === 0 && r.staff > 0)).toBe(true);
+    expect((await payroll.run(owner, runs[0]!.id)).lines.length).toBe(runs[0]!.staff);
+    await payroll.employees(owner, 'salaried');
+    expect(await count('payslip')).toBe(before + 1);
+    expect(await count('employee_salaries')).toBe(staffBefore + 1);
+  });
+
+  it('BUG-144: only the owner changes deductions or a contract TDS rate', async () => {
+    const [s] = await payroll.employees(owner, 'salaried');
+    await expect(
+      payroll.updateEmployee(admin, s!.id, { recoveryInstalment: 0 }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(payroll.updateEmployee(admin, s!.id, { monthlyTds: 1 })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    await payroll.updateEmployee(admin, s!.id, { roleTitle: 'Senior designer' });
+    const [j] = await labour.jobs(owner);
+    await expect(
+      labour.updateJob(admin, j!.id, { tdsRate: j!.tdsRate === 2 ? 1 : 2 }),
+    ).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    await labour.updateJob(admin, j!.id, { progress: 70 });
+  });
+
+  it('BUG-145: category totals come from every purchase, not only the rows on screen', async () => {
+    const v = await inventory.list(owner);
+    const fromRows = v.purchases.reduce((n, x) => n + x.amount, 0);
+    expect(v.total).toBe(fromRows);
+    expect(v.byCategory.reduce((n, c) => n + c.amount, 0)).toBe(v.total);
+  });
+
+  it('BUG-146: a rate of zero is refused', async () => {
+    const [w] = await labour.workers(owner);
+    await expect(payroll.requestRate(owner, w!.id, { value: 0 })).rejects.toMatchObject({
+      code: 'VALIDATION',
+    });
+  });
+});

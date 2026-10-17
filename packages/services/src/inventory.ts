@@ -59,6 +59,8 @@ export interface InventoryView {
 }
 
 export const INVENTORY_MAX = 50_000;
+/** Rows shown on screen; the cards and total always cover everything. */
+export const INVENTORY_LIST_MAX = 2_000;
 
 interface Row {
   id: string;
@@ -102,16 +104,22 @@ const toPurchase = (r: Row): MaterialPurchase => {
   };
 };
 
-function summarise(purchases: MaterialPurchase[]): InventoryView {
-  const map = new Map<MaterialCategory, { amount: Paise; count: number }>();
-  for (const x of purchases) {
-    const s = map.get(x.category) ?? { amount: 0, count: 0 };
-    map.set(x.category, { amount: s.amount + x.amount, count: s.count + 1 });
-  }
-  const byCategory = [...map.entries()]
-    .map(([category, s]) => ({ category, ...s }))
-    .sort((a, b) => b.amount - a.amount);
-  return { purchases, byCategory, total: purchases.reduce((n, x) => n + x.amount, 0) };
+/** BUG-145: category cards and the total cover every match, not just the rows shown. */
+async function summary(
+  c: pg.PoolClient,
+  params: unknown[],
+): Promise<Pick<InventoryView, 'byCategory' | 'total'>> {
+  const { rows } = await c.query<{ category: MaterialCategory; amount: string; count: string }>(
+    `SELECT m.category, sum(m.amount::numeric)::text AS amount, count(*)::text AS count
+       FROM (${SELECT}) m GROUP BY m.category ORDER BY sum(m.amount::numeric) DESC, m.category`,
+    params,
+  );
+  const byCategory = rows.map((r) => ({
+    category: r.category,
+    amount: fromDecimalString(r.amount),
+    count: Number(r.count),
+  }));
+  return { byCategory, total: byCategory.reduce((n, x) => n + x.amount, 0) };
 }
 
 /**
@@ -128,11 +136,12 @@ export class InventoryService {
     authorize(actor, 'inventory', 'view', filter.projectId);
     if (filter.projectId) assertId(filter.projectId, 'Project');
     return withTenant(this.pool, ctx(actor), async (c) => {
+      const params = [projectScope(actor), filter.projectId ?? null];
       const { rows } = await c.query<Row>(
-        `${SELECT} ORDER BY m.purchase_date DESC, m.created_at DESC LIMIT 2000`,
-        [projectScope(actor), filter.projectId ?? null],
+        `${SELECT} ORDER BY m.purchase_date DESC, m.created_at DESC LIMIT ${INVENTORY_LIST_MAX}`,
+        params,
       );
-      return summarise(rows.map(toPurchase));
+      return { purchases: rows.map(toPurchase), ...(await summary(c, params)) };
     });
   }
 
