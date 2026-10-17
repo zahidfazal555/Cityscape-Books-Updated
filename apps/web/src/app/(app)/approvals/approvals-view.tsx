@@ -347,8 +347,7 @@ function PayrollCards({
         <article key={r.id} className={card}>
           <div className="num text-[18px] font-semibold">{rupees(r.totals.net)} net</div>
           <div>
-            Payroll for {MONTH.format(new Date(`${r.period}-01T00:00:00Z`))} · {r.lines.length}{' '}
-            staff ·{' '}
+            Payroll for {MONTH.format(new Date(`${r.period}-01T00:00:00Z`))} · {r.staff} staff ·{' '}
             <Link href={`/payroll/runs/${r.id}`} className="text-primary">
               payslips
             </Link>

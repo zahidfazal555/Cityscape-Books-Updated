@@ -34,7 +34,7 @@ test('payroll: a worker’s +1 and wages, an admin’s payment approved by the o
   await page.getByLabel('Project').selectOption({ index: 1 });
   await page.getByLabel('Daily rate (₹)').fill('1000');
   await page.getByRole('dialog').getByRole('button', { name: 'Add' }).click();
-  const worker = page.getByRole('row').filter({ hasText: 'E2E Mason' });
+  const worker = page.getByRole('row').filter({ hasText: 'E2E Mason' }).first();
   await worker.getByRole('button', { name: 'Mark E2E Mason present today' }).click();
   await expect(worker).toContainText('₹1,000');
   await expect(worker.getByRole('button', { name: 'Mark E2E Mason present today' })).toBeDisabled();
@@ -43,7 +43,8 @@ test('payroll: a worker’s +1 and wages, an admin’s payment approved by the o
   const admin = await (await browser.newContext()).newPage();
   await signIn(admin, 'admin');
   await admin.goto('/payroll?tab=labour');
-  const aRow = admin.getByRole('row').filter({ hasText: 'E2E Mason' });
+  // The workers table comes before the payments list, which repeats the name.
+  const aRow = admin.getByRole('row').filter({ hasText: 'E2E Mason' }).first();
   await aRow.getByRole('button', { name: 'Pay wages' }).click();
   await admin.getByLabel('Amount (₹)').fill('600');
   await admin.getByRole('dialog').getByText('Cash', { exact: true }).click();
@@ -56,7 +57,9 @@ test('payroll: a worker’s +1 and wages, an admin’s payment approved by the o
   await card.getByRole('button', { name: 'Approve' }).click();
   await expect(card).toHaveCount(0);
   await page.goto('/payroll?tab=labour');
-  await expect(page.getByRole('row').filter({ hasText: 'E2E Mason' })).toContainText('₹400');
+  await expect(page.getByRole('row').filter({ hasText: 'E2E Mason' }).first()).toContainText(
+    '₹400',
+  );
 
   // Process this month's payroll as the owner; the payslips page lists the new employee.
   await page.goto('/payroll');
@@ -81,14 +84,14 @@ test('inventory: a manager records a material purchase; the average rate and cat
   await signIn(page, 'manager');
   await page.getByRole('link', { name: 'Inventory' }).click();
   await page.getByRole('button', { name: '+ Record purchase' }).click();
-  await page.getByLabel('Project').selectOption({ index: 1 });
+  await page.getByRole('dialog').getByLabel('Project').selectOption({ index: 1 });
   await page.getByLabel('Item').fill('E2E teak beading');
   await page.getByLabel('Category').selectOption('Wood');
   await page.getByLabel('Quantity').fill('140');
   await page.getByLabel('Unit').fill('Rft');
   await page.getByLabel('Amount (₹)').fill('7337');
   await page.getByLabel('Vendor').fill('Cochin Timber');
-  await page.getByRole('button', { name: 'Record' }).click();
+  await page.getByRole('button', { name: 'Record', exact: true }).click();
   const row = page.getByRole('row').filter({ hasText: 'E2E teak beading' });
   await expect(row).toContainText('₹52.41');
   await expect(page.getByText(/^Wood · \d+$/)).toBeVisible();
