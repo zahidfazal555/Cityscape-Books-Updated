@@ -102,7 +102,7 @@ export interface Worker {
   projectId: string;
   projectCode: string;
   dailyRate: Paise;
-  pendingRate: Paise | null;
+  pendingRate: { id: string; value: Paise; createdBy: string | null } | null;
   isActive: boolean;
   /** Attendance on the current project, in tenths of a day. */
   tenths: number;
@@ -121,7 +121,7 @@ export interface ContractJob {
   projectId: string;
   projectCode: string;
   value: Paise;
-  pendingValue: Paise | null;
+  pendingValue: { id: string; value: Paise; createdBy: string | null } | null;
   tdsRate: ContractTdsRate;
   progress: number;
   isClosed: boolean;
@@ -147,8 +147,19 @@ export interface LabourPayment {
   status: EntryStatus;
   rejectReason: string | null;
   submittedBy: string | null;
+  /** The author's user id (who may withdraw it while pending). */
+  createdBy: string | null;
   submittedAt: string;
 }
+
+const pendingOf = (r: {
+  pending_id: string | null;
+  pending_value: string | null;
+  pending_by: string | null;
+}) =>
+  r.pending_id
+    ? { id: r.pending_id, value: p(r.pending_value ?? '0'), createdBy: r.pending_by }
+    : null;
 
 interface WorkerRow {
   id: string;
@@ -157,7 +168,9 @@ interface WorkerRow {
   project_id: string;
   project_code: string;
   daily_rate: string;
+  pending_id: string | null;
   pending_value: string | null;
+  pending_by: string | null;
   is_active: boolean;
   tenths: string;
   marked_today: boolean;
@@ -169,7 +182,7 @@ interface WorkerRow {
 /** Earned, paid and pending on the worker's current project. */
 const WORKER_SELECT = `
   SELECT e.id, e.name, e.role_title, e.project_id, pr.code AS project_code, e.daily_rate::text,
-         rc.new_value::text AS pending_value, e.is_active,
+         rc.id AS pending_id, rc.new_value::text AS pending_value, rc.created_by AS pending_by, e.is_active,
          coalesce(att.tenths, 0)::text AS tenths, coalesce(att.today, false) AS marked_today,
          coalesce(att.earned, 0)::text AS earned, coalesce(w.paid, 0)::text AS paid,
          coalesce(w.pending, 0)::text AS pending
@@ -198,7 +211,7 @@ const toWorker = (r: WorkerRow): Worker => {
     projectId: r.project_id,
     projectCode: r.project_code,
     dailyRate: p(r.daily_rate),
-    pendingRate: r.pending_value === null ? null : p(r.pending_value),
+    pendingRate: pendingOf(r),
     isActive: r.is_active,
     tenths: Number(r.tenths),
     markedToday: r.marked_today,
@@ -216,7 +229,9 @@ interface JobRow {
   project_id: string;
   project_code: string;
   value: string;
+  pending_id: string | null;
   pending_value: string | null;
+  pending_by: string | null;
   tds_rate: number;
   progress: number;
   is_closed: boolean;
@@ -226,14 +241,14 @@ interface JobRow {
 
 const JOB_SELECT = `
   SELECT j.id, j.contractor, j.work, j.project_id, pr.code AS project_code, j.value::text,
-         rc.new_value::text AS pending_value, j.tds_rate, j.progress, j.is_closed,
+         rc.id AS pending_id, rc.new_value::text AS pending_value, rc.created_by AS pending_by, j.tds_rate, j.progress, j.is_closed,
          coalesce(sum(x.amount) FILTER (WHERE x.status = 'approved'), 0)::text AS paid,
          coalesce(sum(x.amount) FILTER (WHERE x.status = 'pending'), 0)::text AS pending
     FROM contract_job j
     JOIN project pr ON pr.id = j.project_id
     LEFT JOIN rate_change rc ON rc.contract_job_id = j.id AND rc.status = 'pending'
     LEFT JOIN contract_payment x ON x.job_id = j.id AND x.deleted_at IS NULL`;
-const JOB_GROUP = ' GROUP BY j.id, pr.code, rc.new_value';
+const JOB_GROUP = ' GROUP BY j.id, pr.code, rc.id';
 
 const toJob = (r: JobRow): ContractJob => {
   const value = p(r.value);
@@ -246,7 +261,7 @@ const toJob = (r: JobRow): ContractJob => {
     projectId: r.project_id,
     projectCode: r.project_code,
     value,
-    pendingValue: r.pending_value === null ? null : p(r.pending_value),
+    pendingValue: pendingOf(r),
     tdsRate: r.tds_rate as ContractTdsRate,
     progress: r.progress,
     isClosed: r.is_closed,
@@ -271,6 +286,7 @@ interface PaymentRow {
   status: EntryStatus;
   reject_reason: string | null;
   submitted_by: string | null;
+  created_by: string | null;
   created_at: Date;
 }
 
@@ -278,14 +294,14 @@ const PAYMENT_SELECT = {
   wage: `
     SELECT x.id, x.employee_id AS target_id, e.name AS payee, e.role_title AS detail, x.project_id,
            pr.code AS project_code, to_char(x.pay_date, 'YYYY-MM-DD') AS pay_date, x.amount::text,
-           '0' AS tds, x.mode, x.reference, x.status, x.reject_reason, u.name AS submitted_by, x.created_at
+           '0' AS tds, x.mode, x.reference, x.status, x.reject_reason, u.name AS submitted_by, x.created_by, x.created_at
       FROM wage_payment x JOIN employee e ON e.id = x.employee_id JOIN project pr ON pr.id = x.project_id
       LEFT JOIN app_user u ON u.id = x.created_by
      WHERE x.deleted_at IS NULL`,
   contract: `
     SELECT x.id, x.job_id AS target_id, j.contractor AS payee, j.work AS detail, x.project_id,
            pr.code AS project_code, to_char(x.pay_date, 'YYYY-MM-DD') AS pay_date, x.amount::text,
-           x.tds::text, x.mode, x.reference, x.status, x.reject_reason, u.name AS submitted_by, x.created_at
+           x.tds::text, x.mode, x.reference, x.status, x.reject_reason, u.name AS submitted_by, x.created_by, x.created_at
       FROM contract_payment x JOIN contract_job j ON j.id = x.job_id JOIN project pr ON pr.id = x.project_id
       LEFT JOIN app_user u ON u.id = x.created_by
      WHERE x.deleted_at IS NULL`,
@@ -309,6 +325,7 @@ const toPayment =
     status: r.status,
     rejectReason: r.reject_reason,
     submittedBy: r.submitted_by,
+    createdBy: r.created_by,
     submittedAt: r.created_at.toISOString(),
   });
 

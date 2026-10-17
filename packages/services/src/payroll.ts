@@ -120,7 +120,7 @@ export interface Employee {
   ptHalfYear: Paise;
   recoveryInstalment: Paise;
   isActive: boolean;
-  pendingRate: { id: string; value: Paise } | null;
+  pendingRate: { id: string; value: Paise; createdBy: string | null } | null;
   /** Approved advances not yet recovered (a pending run's recovery counts as recovered). */
   advanceOutstanding: Paise;
 }
@@ -136,6 +136,8 @@ export interface StaffAdvance {
   status: EntryStatus;
   rejectReason: string | null;
   submittedBy: string | null;
+  /** The author's user id (who may withdraw it while pending). */
+  createdBy: string | null;
   submittedAt: string;
 }
 
@@ -155,6 +157,8 @@ export interface PayrollRun {
   status: EntryStatus;
   rejectReason: string | null;
   submittedBy: string | null;
+  /** The author's user id (who may withdraw it while pending). */
+  createdBy: string | null;
   submittedAt: string;
   /** Number of payslips; `lines` is filled only by `run(id)` (an audited read). */
   staff: number;
@@ -169,7 +173,11 @@ export interface RateChange {
   projectCode: string | null;
   oldValue: Paise;
   newValue: Paise;
+  /** For a contract job: its TDS u/s 194C rate, so the Owner sees what will be held back. */
+  tdsRate: number | null;
   submittedBy: string | null;
+  /** The author's user id (who may withdraw it while pending). */
+  createdBy: string | null;
   submittedAt: string;
 }
 
@@ -188,6 +196,7 @@ interface EmployeeRow {
   is_active: boolean;
   pending_id: string | null;
   pending_value: string | null;
+  pending_by: string | null;
   outstanding: string;
 }
 
@@ -202,6 +211,7 @@ const EMPLOYEE_SELECT = `
   SELECT e.id, e.kind, e.name, e.role_title, e.project_id, pr.code AS project_code,
          e.monthly_gross::text, e.daily_rate::text, e.monthly_tds::text, e.pt_half_year::text,
          e.recovery_instalment::text, e.is_active, rc.id AS pending_id, rc.new_value::text AS pending_value,
+         rc.created_by AS pending_by,
          (${OUTSTANDING})::text AS outstanding
     FROM employee e
     LEFT JOIN project pr ON pr.id = e.project_id
@@ -220,7 +230,9 @@ const toEmployee = (r: EmployeeRow): Employee => ({
   ptHalfYear: p(r.pt_half_year),
   recoveryInstalment: p(r.recovery_instalment),
   isActive: r.is_active,
-  pendingRate: r.pending_id ? { id: r.pending_id, value: p(r.pending_value ?? '0') } : null,
+  pendingRate: r.pending_id
+    ? { id: r.pending_id, value: p(r.pending_value ?? '0'), createdBy: r.pending_by }
+    : null,
   advanceOutstanding: p(r.outstanding),
 });
 
@@ -276,6 +288,9 @@ export class PayrollService {
     if (data.kind === 'salaried') assertAllProjects(actor);
     const salaried = data.kind === 'salaried';
     const direct = !requiresApproval(actor);
+    // BUG-147 (H2): the Owner approves only the rate, so a non-owner cannot set deductions either.
+    if (!direct && data.monthlyTds + data.ptHalfYear + data.recoveryInstalment > 0)
+      throw new DomainError('FORBIDDEN', 'Only the owner sets TDS, professional tax or recovery.');
     return withTenant(this.pool, ctx(actor), async (c) => {
       const id = randomUUID();
       await c.query(
@@ -680,6 +695,7 @@ interface RateRow {
   project_code: string | null;
   old_value: string;
   new_value: string;
+  tds_rate: number | null;
   submitted_by: string | null;
   created_by: string | null;
   created_at: Date;
@@ -690,7 +706,8 @@ const RATE_SELECT = `
          coalesce(e.name, j.contractor || ' · ' || j.work) AS target_name,
          CASE WHEN rc.field = 'monthly_gross' THEN 'salaried' ELSE 'scoped' END AS kind,
          coalesce(e.project_id, j.project_id) AS project_id, pr.code AS project_code,
-         rc.old_value::text, rc.new_value::text, u.name AS submitted_by, rc.created_by, rc.created_at
+         rc.old_value::text, rc.new_value::text, j.tds_rate, u.name AS submitted_by, rc.created_by,
+         rc.created_at
     FROM rate_change rc
     LEFT JOIN employee e ON e.id = rc.employee_id
     LEFT JOIN contract_job j ON j.id = rc.contract_job_id
@@ -710,7 +727,9 @@ const toRateChange = (r: RateRow): RateChange => ({
   projectCode: r.project_code,
   oldValue: p(r.old_value),
   newValue: p(r.new_value),
+  tdsRate: r.tds_rate,
   submittedBy: r.submitted_by,
+  createdBy: r.created_by,
   submittedAt: r.created_at.toISOString(),
 });
 
@@ -880,12 +899,13 @@ interface AdvanceRow {
   status: EntryStatus;
   reject_reason: string | null;
   submitted_by: string | null;
+  created_by: string | null;
   created_at: Date;
 }
 
 const ADVANCE_SELECT = `
   SELECT a.id, a.employee_id, e.name AS employee_name, to_char(a.adv_date, 'YYYY-MM-DD') AS adv_date,
-         a.amount::text, a.mode, a.reference, a.status, a.reject_reason, u.name AS submitted_by, a.created_at
+         a.amount::text, a.mode, a.reference, a.status, a.reject_reason, u.name AS submitted_by, a.created_by, a.created_at
     FROM staff_advance a JOIN employee e ON e.id = a.employee_id
     LEFT JOIN app_user u ON u.id = a.created_by
    WHERE a.deleted_at IS NULL`;
@@ -901,6 +921,7 @@ const toAdvance = (r: AdvanceRow): StaffAdvance => ({
   status: r.status,
   rejectReason: r.reject_reason,
   submittedBy: r.submitted_by,
+  createdBy: r.created_by,
   submittedAt: r.created_at.toISOString(),
 });
 
@@ -952,6 +973,7 @@ interface RunRow {
   status: EntryStatus;
   reject_reason: string | null;
   submitted_by: string | null;
+  created_by: string | null;
   created_at: Date;
   staff: number;
 }
@@ -959,7 +981,7 @@ interface RunRow {
 const RUN_SELECT = `
   SELECT r.id, r.period, to_char(r.pay_date, 'YYYY-MM-DD') AS pay_date, r.mode, r.reference, r.gross::text,
          r.tds::text, r.pt::text, r.recovery::text, r.net::text, r.status, r.reject_reason,
-         u.name AS submitted_by, r.created_at,
+         u.name AS submitted_by, r.created_by, r.created_at,
          (SELECT count(*) FROM payslip s WHERE s.run_id = r.id)::int AS staff
     FROM payroll_run r LEFT JOIN app_user u ON u.id = r.created_by
    WHERE r.deleted_at IS NULL`;
@@ -974,6 +996,7 @@ const toRun = (r: RunRow, lines: PayrollLine[]): PayrollRun => ({
   status: r.status,
   rejectReason: r.reject_reason,
   submittedBy: r.submitted_by,
+  createdBy: r.created_by,
   submittedAt: r.created_at.toISOString(),
   staff: r.staff,
   lines,
