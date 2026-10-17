@@ -62,8 +62,8 @@ const GROUPS: NavGroup[] = [
   {
     label: 'Operations',
     items: [
-      { label: 'Payroll', href: '/payroll', module: 'payroll', ready: false },
-      { label: 'Inventory', href: '/inventory', module: 'inventory', ready: false },
+      { label: 'Payroll', href: '/payroll', module: 'payroll', ready: true },
+      { label: 'Inventory', href: '/inventory', module: 'inventory', ready: true },
     ],
   },
   {
