@@ -37,7 +37,9 @@ describe('scheduled jobs (go-live)', () => {
       `UPDATE ticket SET created_at = now() - interval '2 hours' WHERE id = $1`,
       [t.id],
     );
-    const r = await slaSweep({ app: appPool, admin: superPool });
+    // BUG-173: the jobs run as the app role (no superuser, no BYPASSRLS).
+    const r = await slaSweep(appPool);
+    expect(r.failures).toEqual([]);
     expect(r.companies).toBeGreaterThan(0);
     const { rows } = await superPool.query(
       `SELECT 1 FROM notification WHERE user_id = $1 AND key = $2`,
@@ -65,7 +67,7 @@ describe('scheduled jobs (go-live)', () => {
       `UPDATE ticket SET closed_at = now() - interval '4 years' WHERE id = $1`,
       [old],
     );
-    await anonymiseCallers({ app: appPool, admin: superPool });
+    await anonymiseCallers(appPool);
     const caller = async (id: string) =>
       (await superPool.query(`SELECT caller_name, caller_phone FROM ticket WHERE id = $1`, [id]))
         .rows[0];
@@ -74,8 +76,9 @@ describe('scheduled jobs (go-live)', () => {
   });
 
   it('verify:books passes for consistent books', async () => {
-    const r = (await verifyBooks(superPool)).find((x) => x.companyId === f.companyId);
+    const r = (await verifyBooks(appPool)).checks.find((x) => x.companyId === f.companyId);
     expect(r).toMatchObject({ ok: true, problems: [] });
+    expect(r?.counts.journals).toBeGreaterThanOrEqual(0);
   });
 
   it('bootstrap creates the company, its accounts and a password-less Owner, once', async () => {
@@ -85,6 +88,7 @@ describe('scheduled jobs (go-live)', () => {
       company: name,
       ownerName: 'Saravanan S',
       ownerEmail: email,
+      another: true,
     });
     const { rows } = await superPool.query(
       `SELECT (SELECT count(*)::int FROM account WHERE company_id = $1) AS accounts,
@@ -94,7 +98,58 @@ describe('scheduled jobs (go-live)', () => {
     expect(rows[0].accounts).toBeGreaterThan(10);
     expect(rows[0].hash).toBeNull();
     await expect(
-      bootstrapCompany(superPool, { company: name, ownerName: 'X', ownerEmail: email }),
-    ).rejects.toThrow();
+      bootstrapCompany(superPool, {
+        company: `${name} 2`,
+        ownerName: 'X',
+        ownerEmail: email,
+        another: true,
+      }),
+    ).rejects.toThrow('already in use');
+  });
+
+  it('BUG-176: verify-books notices a numbered document that is missing (e.g. after a bad restore)', async () => {
+    await tickets.create(owner, {
+      projectId,
+      type: 'snag',
+      subject: 'Gap',
+      channel: 'phone',
+    });
+    // A number issued with no document behind it: what a partial restore looks like.
+    await superPool.query(
+      `UPDATE number_series SET next_value = next_value + 1 WHERE company_id = $1 AND series = 'ticket'`,
+      [f.companyId],
+    );
+    const r = (await verifyBooks(appPool)).checks.find((x) => x.companyId === f.companyId);
+    expect(r?.ok).toBe(false);
+    expect(r?.problems.join(' ')).toMatch(/ticket -: \d+ numbers issued, \d+ documents found/);
+  });
+
+  it('BUG-179: callers on tickets resolved (never closed) more than 3 years ago are anonymised too', async () => {
+    const { id } = await tickets.create(owner, {
+      projectId,
+      type: 'snag',
+      subject: 'Resolved only',
+      channel: 'phone',
+      callerName: 'Ms Y',
+      callerPhone: '9840022222',
+    });
+    await tickets.update(owner, id, { status: 'resolved' });
+    await superPool.query(
+      `UPDATE ticket SET resolved_at = now() - interval '4 years' WHERE id = $1`,
+      [id],
+    );
+    await anonymiseCallers(appPool);
+    const { rows } = await superPool.query(`SELECT caller_name FROM ticket WHERE id = $1`, [id]);
+    expect(rows[0].caller_name).toBeNull();
+  });
+
+  it('BUG-175: bootstrap refuses a second company unless asked', async () => {
+    await expect(
+      bootstrapCompany(superPool, {
+        company: `Again ${Date.now()}`,
+        ownerName: 'Z',
+        ownerEmail: `z.${Date.now()}@example.test`,
+      }),
+    ).rejects.toThrow('already exists');
   });
 });

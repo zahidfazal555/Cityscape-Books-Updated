@@ -4,6 +4,8 @@ import { z } from 'zod';
  * Typed, validated configuration (ENGINEERING-STANDARDS §1): the app refuses to start when a
  * required value is missing. Values come from the environment / secret manager, never the repo.
  */
+const blank = (v: unknown) => (v === '' ? undefined : v);
+
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   DATABASE_URL: z.string().url(),
@@ -18,12 +20,16 @@ const schema = z.object({
   /** 'outbox' keeps mail in memory (dev/test only); 'smtp' sends through SMTP_URL. */
   MAIL_MODE: z.enum(['outbox', 'smtp']).default('outbox'),
   /** smtps://user:pass@host:465 (implicit TLS) or smtp://user:pass@host:587 (STARTTLS required). */
-  SMTP_URL: z
-    .string()
-    .regex(/^smtps?:\/\//, 'SMTP_URL must start with smtps:// or smtp://')
-    .optional(),
+  // A blank line in .env means "not set" (BUG-177).
+  SMTP_URL: z.preprocess(
+    blank,
+    z
+      .string()
+      .regex(/^smtps?:\/\//, 'SMTP_URL must start with smtps:// or smtp://')
+      .optional(),
+  ),
   /** Sender, e.g. "Cityscape Books <books@cityscapedecors.in>". */
-  MAIL_FROM: z.string().min(3).optional(),
+  MAIL_FROM: z.preprocess(blank, z.string().min(3).optional()),
   /** Number of reverse proxies in front of the app, for client IP extraction. */
   TRUSTED_PROXIES: z.coerce.number().int().min(0).max(5).default(1),
   /** Only the e2e suite sets this: it runs a production build with the in-memory outbox. */

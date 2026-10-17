@@ -26,8 +26,8 @@ Secrets per environment (see `.env.example`):
 
 | Name | Value |
 |---|---|
-| `DATABASE_URL` | the `csd_app` role (row-level security applies) |
-| `DATABASE_ADMIN_URL` | the owner/migration role (migrations, jobs) |
+| `DATABASE_URL` | a login role that is a member of `csd_app` (row-level security applies). The app and the scheduled jobs use it. |
+| `DATABASE_ADMIN_URL` | the database owner / migration role: migrations and `bootstrap` only. No superuser or BYPASSRLS is needed. |
 | `JWT_SECRET` | `openssl rand -base64 48` |
 | `APP_URL` | public HTTPS URL |
 | `MAIL_MODE=smtp`, `SMTP_URL`, `MAIL_FROM` | `smtps://…:465` or `smtp://…:587` (STARTTLS is enforced) |
@@ -35,6 +35,15 @@ Secrets per environment (see `.env.example`):
 | `TRUSTED_PROXIES` | number of proxies in front of the app (usually 1) |
 
 The app refuses to start in production without real mail, `ATTACHMENT_DIR`, or a strong `JWT_SECRET`.
+
+The migrations create `csd_app` as a NOLOGIN group. After the first migration, create the login role the app uses, once:
+```sql
+CREATE ROLE books_app LOGIN PASSWORD '<from the secret manager>' NOSUPERUSER NOBYPASSRLS;
+GRANT csd_app TO books_app;
+```
+Then set `DATABASE_URL=postgres://books_app:…@host/db`.
+
+Build images from a clean checkout. `.dockerignore` keeps `.env*`, keys and dumps out, but keep `prod.env` outside the repository anyway.
 
 ## 4. Build and deploy
 ```sh
@@ -50,22 +59,26 @@ docker run -d --env-file prod.env -v photos:/data/attachments -p 3000:3000 citys
   - not on the 18th–20th, or in the last 2 days of the month;
   - the Release Approver's click.
 
-## 5. Scheduled jobs (cron on the host, same image)
+## 5. Scheduled jobs (cron on the host, same image; cron times are UTC)
 | Schedule | Command | Why |
 |---|---|---|
 | every 15 min | `pnpm jobs sla-sweep` | SLA alerts even when nobody has the app open |
-| daily 02:30 IST | `pnpm jobs verify-books` | every journal balances, trial balance is zero, no gaps in invoice numbers. Exit code 1 means alert the Release Approver (S2). |
+| daily 21:00 UTC (02:30 IST) | `pnpm jobs verify-books` | every journal balances, trial balance is zero, no gaps in invoice numbers. Exit code 1 means alert the Release Approver (S2). |
 | weekly | `pnpm jobs retention` | anonymise ticket caller name and phone 3 years after closure (§9) |
 
 Example: `docker run --rm --env-file prod.env cityscape-books:vX.Y.Z pnpm jobs verify-books`.
+
+Every job exits 1 when any company fails or any check finds a problem. If no company is visible, the job fails rather than passing. Send cron failures to the Release Approver.
 
 Back up the database and the photo volume on the same schedule. The quarterly restore drill uses `pnpm verify:books` (RUNBOOKS §6).
 
 ## 6. First-time set-up (Owner, with the Release Approver)
 1. Create the company and the Owner:
    ```sh
-   pnpm jobs bootstrap "Cityscape Decors" "Saravanan S" owner@cityscapedecors.in
+   docker run --rm --env-file prod.env cityscape-books:vX.Y.Z \
+     pnpm jobs bootstrap "Cityscape Decors" "Saravanan S" owner@cityscapedecors.in
    ```
+   It runs once: it refuses if a company already exists (`--another` overrides on purpose).
 2. The Owner opens the app, clicks **Forgot password** and sets a strong password from the email.
 3. **Settings:** legal name, GSTIN, state, address, phone, email and bank details. These print on every invoice (Technical Spec §13 open items).
 4. **Users & security:** invite the Admin, Project Manager, Asst. Manager and Site Engineers. Set project access and any custom rights.

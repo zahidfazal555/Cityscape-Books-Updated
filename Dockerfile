@@ -19,6 +19,9 @@ FROM deps AS build
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter @csd/web build
+# Runtime needs no build cache and no dev tooling (BUG-180); tsx stays for `pnpm jobs`.
+RUN rm -rf apps/web/.next/cache node_modules apps/*/node_modules packages/*/node_modules \
+    && CI=true pnpm install --prod --frozen-lockfile --offline
 
 FROM node:22-bookworm-slim AS run
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PNPM_HOME=/pnpm PATH=/pnpm:$PATH \

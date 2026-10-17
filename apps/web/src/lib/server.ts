@@ -102,7 +102,13 @@ export function services(): Services {
     config: { jwtSecret: Buffer.from(e.JWT_SECRET, 'base64'), appUrl: e.APP_URL },
     breach: new HibpBreachChecker(),
     mailer,
-    onMailError: (error, subject) => log('error', 'mail failed', { error, subject }),
+    // Only the error code: SMTP replies can echo the recipient's address (BUG-181).
+    onMailError: (error, subject) =>
+      log('error', 'mail failed', {
+        code: (error as { code?: string }).code ?? 'unknown',
+        responseCode: (error as { responseCode?: number }).responseCode,
+        subject,
+      }),
   });
   g.__csd = {
     pool,
