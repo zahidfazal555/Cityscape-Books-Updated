@@ -33,19 +33,34 @@ test('site engineer on a phone: adds an expense with a bill photo; it waits for 
   await expect(entry).toContainText('Pending');
   await phone.close();
 
-  const owner = await browser.newPage();
+  const ownerCtx = await browser.newContext();
+  const owner = await ownerCtx.newPage();
   await signIn(owner, 'owner');
+  const views = () =>
+    withDb(
+      async (c) =>
+        (await c.query(`SELECT 1 FROM audit_log WHERE entity = 'attachment' AND action = 'view'`))
+          .rowCount,
+    );
+  const viewsBefore = await views();
   await owner.getByRole('link', { name: 'Approvals' }).click();
   const card = owner.getByRole('article').filter({ hasText: 'Grout and spacers' });
   await expect(card).toContainText('₹1,850');
+  // BUG-110: the card shows a thumbnail; loading the queue is not a photo view.
+  await expect(card.locator('img')).toBeVisible();
+  expect(await views()).toBe(viewsBefore);
   await card.getByRole('button', { name: 'Approve' }).click();
   await expect(card).toHaveCount(0);
   await owner.getByRole('link', { name: 'Expenses' }).click();
   const row = owner.getByRole('row').filter({ hasText: 'Grout and spacers' });
   await expect(row).toContainText('Approved');
-  // The bill photo opens from the list.
+  // BUG-111: the photo opens from the list even after the 15-minute access token is gone
+  // (the viewer refreshes the session instead of claiming the bill is a PDF).
+  await ownerCtx.clearCookies({ name: 'csd_at' });
   await row.getByRole('button', { name: 'View' }).click();
   await expect(owner.getByRole('img', { name: 'Bill photo' })).toBeVisible();
+  expect(await views()).toBe((viewsBefore ?? 0) + 1);
+  await ownerCtx.close();
 });
 
 test('owner: PO → issue → convert to bill (unregistered: no GST) → pay → Paid; a manager’s payment waits for approval', async ({
@@ -110,4 +125,45 @@ test('owner: PO → issue → convert to bill (unregistered: no GST) → pay →
   await expect(card).toHaveCount(0);
   await page.goto('/bills');
   await expect(page.getByRole('row').filter({ hasText: 'SBP-1042' })).toContainText('Paid');
+});
+
+test('BUG-113: an entry dated in a locked period offers Reject only', async ({ page, baseURL }) => {
+  await signIn(page, 'manager');
+  const origin = { origin: baseURL ?? '' };
+  const up = await page.request.post('/api/v1/attachments', {
+    headers: { ...origin, 'content-type': 'image/jpeg' },
+    data: JPEG,
+  });
+  const { id: attachmentId } = (await up.json()) as { id: string };
+  const projectId = await withDb(
+    async (c) =>
+      (await c.query<{ id: string }>(`SELECT id FROM project WHERE code = 'CSD-PRJ-0002'`)).rows[0]!
+        .id,
+  );
+  const res = await page.request.post('/api/v1/expenses', {
+    headers: { ...origin, 'idempotency-key': crypto.randomUUID() },
+    data: {
+      projectId,
+      txnDate: '2026-10-01',
+      amount: 500_00,
+      particulars: 'Locked-month tea and snacks',
+      category: 'misc',
+      paidBy: 'Shiva',
+      mode: 'cash',
+      attachmentId,
+    },
+  });
+  expect(res.status()).toBe(200);
+  await withDb((c) => c.query(`UPDATE company SET lock_date = '2026-10-02'`));
+  try {
+    const owner = await page.context().browser()!.newPage();
+    await signIn(owner, 'owner');
+    await owner.goto('/approvals');
+    const card = owner.getByRole('article').filter({ hasText: 'Locked-month tea and snacks' });
+    await expect(card).toContainText('Locked period');
+    await expect(card.getByRole('button', { name: 'Approve' })).toHaveCount(0);
+    await expect(card.getByRole('button', { name: 'Reject' })).toBeVisible();
+  } finally {
+    await withDb((c) => c.query(`UPDATE company SET lock_date = NULL`));
+  }
 });

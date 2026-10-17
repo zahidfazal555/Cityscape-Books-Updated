@@ -1,5 +1,6 @@
 import 'server-only';
 import { can, type Actor } from '@csd/core';
+import type { ProjectStatus } from '@csd/services';
 import type { VendorOption } from '@/components/purchases/bill-drawer';
 import type { ProjectOption } from '@/components/sales/use-action';
 import { services } from './server';
@@ -13,15 +14,30 @@ export async function vendorOptions(actor: Actor): Promise<VendorOption[]> {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Open projects the user can see. */
-export async function projectOptions(actor: Actor): Promise<ProjectOption[]> {
+export type ProjectUse = 'spend' | 'bill' | 'filter';
+
+/**
+ * Projects for a form or filter, matching what the server accepts (BUG-114): new spends and POs
+ * on active or on-hold projects; bills also on completed ones; filters on every project.
+ */
+export async function projectOptions(
+  actor: Actor,
+  use: ProjectUse = 'spend',
+): Promise<ProjectOption[]> {
   if (!can(actor, 'projects', 'view')) return [];
-  const list = await services().projects.list(actor, 'active');
-  return list.map((p) => ({
-    id: p.id,
-    code: p.code,
-    name: p.name,
-    clientName: p.clientName,
-    clientStateCode: p.clientStateCode,
-  }));
+  const allowed: Record<ProjectUse, readonly ProjectStatus[]> = {
+    spend: ['active', 'on_hold'],
+    bill: ['active', 'on_hold', 'completed'],
+    filter: ['active', 'on_hold', 'completed', 'cancelled'],
+  };
+  const list = await services().projects.list(actor);
+  return list
+    .filter((p) => allowed[use].includes(p.status))
+    .map((p) => ({
+      id: p.id,
+      code: p.code,
+      name: p.name,
+      clientName: p.clientName,
+      clientStateCode: p.clientStateCode,
+    }));
 }

@@ -34,11 +34,13 @@ export class AttachmentsService {
     await withTenant(this.pool, ctx(actor), async (c) => {
       await assertUnclaimedQuota(c);
       await c.query(
-        `INSERT INTO attachment (id, company_id, storage_key, content_type, size_bytes, sha256, uploaded_by)
-         VALUES ($1, app_company_id(), $2, $3, $4, $5, app_user_id())`,
+        `INSERT INTO attachment (id, company_id, storage_key, thumbnail_key, content_type, size_bytes, sha256,
+                                 uploaded_by)
+         VALUES ($1, app_company_id(), $2, $3, $4, $5, $6, app_user_id())`,
         [
           id,
           key,
+          clean.thumbnail ? `${key}.t` : null,
           clean.type,
           clean.bytes.byteLength,
           createHash('sha256').update(clean.bytes).digest('hex'),
@@ -51,6 +53,7 @@ export class AttachmentsService {
         after: { contentType: clean.type, size: clean.bytes.byteLength },
       });
       await this.store.put(key, clean.bytes);
+      if (clean.thumbnail) await this.store.put(`${key}.t`, clean.thumbnail);
     });
     return { id, contentType: clean.type };
   }
@@ -62,29 +65,53 @@ export class AttachmentsService {
   async read(actor: Actor, id: string): Promise<StoredFile> {
     assertId(id, 'File');
     const meta = await withTenant(this.pool, ctx(actor), async (c) => {
-      const { rows } = await c.query<{
-        storage_key: string;
-        content_type: AllowedType;
-        uploaded_by: string;
-        project_id: string | null;
-      }>(
-        `SELECT a.storage_key, a.content_type, a.uploaded_by, e.project_id
-           FROM attachment a LEFT JOIN expense e ON e.attachment_id = a.id AND e.deleted_at IS NULL
-          WHERE a.id = $1`,
-        [id],
-      );
-      const r = rows[0];
-      const allowed =
-        r !== undefined &&
-        (r.project_id === null
-          ? r.uploaded_by === actor.userId
-          : can(actor, 'expenses', 'view', r.project_id));
-      if (!r || !allowed) throw new DomainError('NOT_FOUND', 'File not found.');
+      const r = await visibleAttachment(c, actor, id);
       await writeAudit(c, { action: 'view', entity: 'attachment', entityId: id });
       return r;
     });
     return { bytes: await this.store.get(meta.storage_key), contentType: meta.content_type };
   }
+
+  /**
+   * The small card image (same access rule, not audited: it is a preview, not the bill).
+   * PDFs have none.
+   */
+  async thumbnail(actor: Actor, id: string): Promise<StoredFile> {
+    assertId(id, 'File');
+    const meta = await withTenant(this.pool, ctx(actor), (c) => visibleAttachment(c, actor, id));
+    if (!meta.thumbnail_key) throw new DomainError('NOT_FOUND', 'No preview for this file.');
+    return { bytes: await this.store.get(meta.thumbnail_key), contentType: 'image/jpeg' };
+  }
+}
+
+interface AttachmentRow {
+  storage_key: string;
+  thumbnail_key: string | null;
+  content_type: AllowedType;
+  uploaded_by: string;
+  project_id: string | null;
+}
+
+/** Linked photos follow the expense's project scope; unattached ones are the uploader's. */
+async function visibleAttachment(
+  c: pg.PoolClient,
+  actor: Actor,
+  id: string,
+): Promise<AttachmentRow> {
+  const { rows } = await c.query<AttachmentRow>(
+    `SELECT a.storage_key, a.thumbnail_key, a.content_type, a.uploaded_by, e.project_id
+       FROM attachment a LEFT JOIN expense e ON e.attachment_id = a.id AND e.deleted_at IS NULL
+      WHERE a.id = $1`,
+    [id],
+  );
+  const r = rows[0];
+  const allowed =
+    r !== undefined &&
+    (r.project_id === null
+      ? r.uploaded_by === actor.userId
+      : can(actor, 'expenses', 'view', r.project_id));
+  if (!r || !allowed) throw new DomainError('NOT_FOUND', 'File not found.');
+  return r;
 }
 
 /** Photos uploaded but not attached to an expense yet, per user (bounds disk use; BUG-106). */

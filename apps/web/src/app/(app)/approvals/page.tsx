@@ -6,8 +6,8 @@ import { ApprovalsView } from './approvals-view';
 
 /** README §9: the Owner's approval queue (H2). */
 export default async function ApprovalsPage() {
-  const { actor } = await getSession();
+  const { actor, company } = await getSession();
   if (!canApprove(actor)) return <EmptyState>Only the owner approves entries.</EmptyState>;
   const queue = await services().approvals.queue(actor);
-  return <ApprovalsView queue={queue} />;
+  return <ApprovalsView queue={queue} lockDate={company.lockDate} />;
 }

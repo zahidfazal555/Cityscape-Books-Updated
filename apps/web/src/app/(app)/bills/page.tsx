@@ -19,10 +19,10 @@ export default async function BillsPage({
   const raw = (await searchParams).status;
   const status = STATUSES.find((s) => s === raw) as BillStatus | undefined;
   const canEdit = can(actor, 'bills', 'edit');
-  const [bills, vendors, projects, letterhead] = await Promise.all([
+  const [bills, vendors, projects] = await Promise.all([
     services().bills.list(actor, { status }),
     canEdit ? vendorOptions(actor) : Promise.resolve([]),
-    canEdit ? projectOptions(actor) : Promise.resolve([]),
+    canEdit ? projectOptions(actor, 'bill') : Promise.resolve([]),
     services()
       .settings.letterhead(actor)
       .catch(() => null),
@@ -35,7 +35,7 @@ export default async function BillsPage({
       lockDate={company.lockDate}
       vendors={vendors}
       projects={projects}
-      companyStateCode={letterhead?.stateCode ?? '33'}
+      companyStateCode={company.stateCode}
     />
   );
 }

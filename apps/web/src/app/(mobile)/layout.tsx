@@ -16,7 +16,7 @@ export default function MobileLayout({ children }: { children: ReactNode }) {
           height={24}
           className="h-6 w-auto"
         />
-        <SignOutButton />
+        <SignOutButton large />
       </header>
       <main className="mx-auto max-w-[430px] px-4 pb-24 pt-4">{children}</main>
     </div>

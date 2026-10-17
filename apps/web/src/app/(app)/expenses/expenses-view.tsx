@@ -7,6 +7,7 @@ import type { Expense, ExpenseFilter } from '@csd/services';
 import { Button, EmptyState, FormError } from '@/components/ui';
 import { Drawer, PageHeader, Pill, Row, Table } from '@/components/kit';
 import { ExpenseForm } from '@/components/purchases/expense-form';
+import { SecureImage } from '@/components/purchases/secure-image';
 import { selectCls, useAction, type ProjectOption } from '@/components/sales/use-action';
 import { apiFetch } from '@/lib/client';
 import { rupees } from '@/lib/format';
@@ -46,6 +47,7 @@ export function ExpensesView({
   list,
   filter,
   projects,
+  formProjects,
   lockDate,
   me,
   rights,
@@ -53,13 +55,15 @@ export function ExpensesView({
   list: { rows: Expense[]; count: number; total: Paise };
   filter: ExpenseFilter;
   projects: ProjectOption[];
+  /** Projects new entries may go to (active, on hold). */
+  formProjects: ProjectOption[];
   lockDate: string | null;
   me: string;
   rights: Rights;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState<{ kind: 'new' } | { kind: 'edit'; e: Expense } | null>(null);
-  const [photo, setPhoto] = useState<string | null>(null);
+  const [photo, setPhoto] = useState<Expense | null>(null);
   const { error, run } = useAction();
   const go = (patch: Partial<ExpenseFilter>) =>
     router.push(`/expenses${query({ ...filter, ...patch })}`);
@@ -137,11 +141,7 @@ export function ExpensesView({
               <span className="truncate text-muted">{e.paidTo ?? '—'}</span>
               <span>
                 {e.attachmentId ? (
-                  <button
-                    type="button"
-                    className="text-primary"
-                    onClick={() => setPhoto(e.attachmentId)}
-                  >
+                  <button type="button" className="text-primary" onClick={() => setPhoto(e)}>
                     View
                   </button>
                 ) : (
@@ -181,21 +181,37 @@ export function ExpensesView({
         >
           <ExpenseForm
             expense={open.kind === 'edit' ? open.e : null}
-            projects={projects}
+            projects={formProjects}
             isOwner={rights.owner}
             onDone={done}
             onCancel={() => setOpen(null)}
           />
         </Drawer>
       ) : null}
-      {photo ? <PhotoLightbox id={photo} onClose={() => setPhoto(null)} /> : null}
+      {photo?.attachmentId ? (
+        <PhotoLightbox
+          id={photo.attachmentId}
+          type={photo.attachmentType}
+          onClose={() => setPhoto(null)}
+        />
+      ) : null}
     </>
   );
 }
 
-/** Bill photo lightbox. Each view is audited on the server (H4). PDFs download instead. */
-export function PhotoLightbox({ id, onClose }: { id: string; onClose: () => void }) {
-  const [failed, setFailed] = useState(false);
+/**
+ * Bill photo lightbox. Opening it is the audited view (H4). PDFs are offered as a download
+ * (BUG-111: chosen from the stored type, never guessed from a load error).
+ */
+export function PhotoLightbox({
+  id,
+  type,
+  onClose,
+}: {
+  id: string;
+  type: string | null;
+  onClose: () => void;
+}) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(16,24,40,.75)] p-6"
@@ -208,7 +224,7 @@ export function PhotoLightbox({ id, onClose }: { id: string; onClose: () => void
         className="max-h-full max-w-3xl rounded-lg bg-white p-3"
         onClick={(e) => e.stopPropagation()}
       >
-        {failed ? (
+        {type === 'application/pdf' ? (
           <p className="p-6 text-[13.5px]">
             This bill is a PDF.{' '}
             <a className="text-primary underline" href={`/api/v1/attachments/${id}`}>
@@ -217,11 +233,11 @@ export function PhotoLightbox({ id, onClose }: { id: string; onClose: () => void
             .
           </p>
         ) : (
-          <img
+          <SecureImage
             src={`/api/v1/attachments/${id}`}
             alt="Bill photo"
             className="max-h-[80vh] w-auto"
-            onError={() => setFailed(true)}
+            fallback="Couldn't load the photo. Try again."
           />
         )}
         <div className="mt-2 flex justify-end">

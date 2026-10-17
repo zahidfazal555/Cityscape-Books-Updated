@@ -61,10 +61,11 @@ export function PoDrawer({
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) =>
     setF({ ...f, [k]: e.target.value });
   const vendor = vendors.find((v) => v.id === f.vendorId);
-  const registered = po ? po.vendorGstin !== null : Boolean(vendor?.gstin);
+  // An edit re-applies the vendor's current registration, as the server does (BUG-117).
+  const registered = po ? po.currentVendor.gstin !== null : Boolean(vendor?.gstin);
   const rate = registered ? Number(f.gstRate) : 0;
   const withRate = lines.map((l) => ({ ...l, gstRate: rate }));
-  const state = po?.vendorGstin?.slice(0, 2) ?? vendor?.stateCode ?? null;
+  const state = po ? po.currentVendor.stateCode : (vendor?.stateCode ?? null);
   const totals = previewTotals(withRate, { placeOfSupply: state, companyStateCode });
 
   const save = () =>

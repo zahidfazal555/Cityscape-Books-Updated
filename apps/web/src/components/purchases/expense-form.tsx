@@ -18,6 +18,19 @@ import { EXPENSE_MODE_LABEL, OWNER_APPROVAL_NOTE, PAID_BY } from '@/lib/purchase
 
 const MODES: readonly ExpenseMode[] = ['upi', 'cash', 'bank'];
 
+/** An entry being edited keeps its own project in the list, whatever its status (BUG-114). */
+function withOwnProject(expense: Expense | null, projects: ProjectOption[]): ProjectOption[] {
+  if (!expense || projects.some((p) => p.id === expense.projectId)) return projects;
+  const own = {
+    id: expense.projectId,
+    code: expense.projectCode,
+    name: expense.projectName,
+    clientName: '',
+    clientStateCode: '',
+  };
+  return [own, ...projects];
+}
+
 function initial(e: Expense | null, projects: ProjectOption[], paidBy: string) {
   if (e) {
     return {
@@ -67,6 +80,7 @@ export function ExpenseForm({
   onCancel?: () => void;
 }) {
   const [f, setF] = useState(() => initial(expense, projects, defaultPaidBy));
+  const options = withOwnProject(expense, projects);
   const [uploading, setUploading] = useState(false);
   const [idempotencyKey] = useState(newIdempotencyKey);
   const { busy, error, setError, run } = useAction();
@@ -112,6 +126,7 @@ export function ExpenseForm({
     }, onDone);
 
   const big = mobile ? 'min-h-[44px]' : '';
+  const field = mobile ? 'h-11' : undefined;
   return (
     <div className="flex flex-col gap-4">
       {isOwner ? null : (
@@ -127,7 +142,7 @@ export function ExpenseForm({
           onChange={set('projectId')}
         >
           <option value="">Choose…</option>
-          {projects.map((p) => (
+          {options.map((p) => (
             <option key={p.id} value={p.id}>
               {p.code} · {p.name}
             </option>
@@ -146,7 +161,12 @@ export function ExpenseForm({
         />
       </Field>
       <Field label="What it was for" htmlFor="e-particulars">
-        <Input id="e-particulars" value={f.particulars} onChange={set('particulars')} />
+        <Input
+          className={field}
+          id="e-particulars"
+          value={f.particulars}
+          onChange={set('particulars')}
+        />
       </Field>
       <div className="flex flex-col gap-1.5">
         <span className="text-[13px] font-medium text-body">Category</span>
@@ -155,6 +175,7 @@ export function ExpenseForm({
           options={COST_CATEGORIES.map((c) => ({ value: c, label: CATEGORY_LABEL[c] }))}
           value={f.category}
           onChange={(category) => setF({ ...f, category })}
+          large={mobile}
         />
       </div>
       <div className="flex flex-col gap-1.5">
@@ -164,6 +185,7 @@ export function ExpenseForm({
           options={PAID_BY.map((p) => ({ value: p, label: p }))}
           value={f.paidBy}
           onChange={(paidBy) => setF({ ...f, paidBy })}
+          large={mobile}
         />
       </div>
       <div className="flex flex-col gap-1.5">
@@ -173,40 +195,29 @@ export function ExpenseForm({
           options={MODES.map((m) => ({ value: m, label: EXPENSE_MODE_LABEL[m] }))}
           value={f.mode}
           onChange={(mode) => setF({ ...f, mode })}
+          large={mobile}
         />
       </div>
       <div className="grid grid-cols-2 gap-3">
         <Field label="Paid to" htmlFor="e-paidto">
-          <Input id="e-paidto" value={f.paidTo} onChange={set('paidTo')} />
+          <Input className={field} id="e-paidto" value={f.paidTo} onChange={set('paidTo')} />
         </Field>
         <Field label="Date" htmlFor="e-date">
-          <Input id="e-date" type="date" value={f.txnDate} onChange={set('txnDate')} />
+          <Input
+            className={field}
+            id="e-date"
+            type="date"
+            value={f.txnDate}
+            onChange={set('txnDate')}
+          />
         </Field>
       </div>
-      <div className="flex flex-col gap-1.5">
-        <label
-          htmlFor="e-photo"
-          className={`flex cursor-pointer items-center justify-center rounded-md border border-dashed px-3 text-[13.5px] font-medium ${
-            f.attachmentId
-              ? 'border-success bg-success-bg text-success'
-              : 'border-dashline text-primary'
-          } ${mobile ? 'h-14' : 'h-10'}`}
-        >
-          {uploading
-            ? 'Uploading…'
-            : f.attachmentId
-              ? 'Bill photo attached ✓ (tap to replace)'
-              : 'Take photo of bill (required)'}
-        </label>
-        <input
-          id="e-photo"
-          type="file"
-          accept="image/jpeg,image/png,application/pdf"
-          capture="environment"
-          className="sr-only"
-          onChange={(e) => void upload(e.target.files?.[0])}
-        />
-      </div>
+      <PhotoPicker
+        attached={f.attachmentId !== null}
+        uploading={uploading}
+        mobile={mobile}
+        onPick={(file) => void upload(file)}
+      />
       <FormError message={error} />
       <div
         className={mobile ? 'sticky bottom-0 -mx-4 bg-white px-4 py-3' : 'flex justify-end gap-2'}
@@ -224,6 +235,48 @@ export function ExpenseForm({
           {busy ? 'Saving…' : isOwner ? 'Save expense' : 'Submit for approval'}
         </Button>
       </div>
+    </div>
+  );
+}
+
+function PhotoPicker({
+  attached,
+  uploading,
+  mobile,
+  onPick,
+}: {
+  attached: boolean;
+  uploading: boolean;
+  mobile: boolean;
+  onPick: (file: File | undefined) => void;
+}) {
+  const text = uploading
+    ? 'Uploading…'
+    : attached
+      ? 'Bill photo attached ✓ (tap to replace)'
+      : 'Take photo of bill (required)';
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label
+        htmlFor="e-photo"
+        className={`flex cursor-pointer items-center justify-center rounded-md border border-dashed px-3 text-[13.5px] font-medium ${
+          attached ? 'border-success bg-success-bg text-success' : 'border-dashline text-primary'
+        } ${mobile ? 'h-14' : 'h-10'}`}
+      >
+        {text}
+      </label>
+      <input
+        id="e-photo"
+        type="file"
+        accept="image/jpeg,image/png,application/pdf"
+        capture="environment"
+        className="sr-only"
+        onChange={(e) => {
+          onPick(e.target.files?.[0]);
+          // Picking the same file again after a failed upload must fire again.
+          e.target.value = '';
+        }}
+      />
     </div>
   );
 }

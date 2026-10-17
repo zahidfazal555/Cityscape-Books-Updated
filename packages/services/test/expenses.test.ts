@@ -379,3 +379,41 @@ describe('approvals queue (FR-12)', () => {
     await expect(approvals.queue(manager)).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 });
+
+describe('review regressions (PR 11)', () => {
+  it('BUG-110: images get a small, unaudited thumbnail; the full photo stays audited; PDFs have none', async () => {
+    const { id } = await files.upload(site, JPEG);
+    const before = await superPool.query(
+      `SELECT count(*)::int AS n FROM audit_log WHERE entity = 'attachment' AND entity_id = $1 AND action = 'view'`,
+      [id],
+    );
+    const thumb = await files.thumbnail(site, id);
+    expect(thumb.contentType).toBe('image/jpeg');
+    expect(jpeg.decode(thumb.bytes).width).toBeLessThanOrEqual(240);
+    const after = await superPool.query(
+      `SELECT count(*)::int AS n FROM audit_log WHERE entity = 'attachment' AND entity_id = $1 AND action = 'view'`,
+      [id],
+    );
+    expect(after.rows[0].n).toBe(before.rows[0].n);
+    await expect(files.thumbnail(manager, id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    const pdf = await files.upload(site, Buffer.from('%PDF-1.7 scanned bill'));
+    await expect(files.thumbnail(site, pdf.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('BUG-111/118: expenses carry the photo type; "mine" lists only the caller’s own entries', async () => {
+    const pdf = await files.upload(site, Buffer.from('%PDF-1.7 scanned bill'));
+    const e = await expenses.create(site, await input({ attachmentId: pdf.id }));
+    expect((await expenses.get(owner, e.id)).attachmentType).toBe('application/pdf');
+    await expenses.create(owner, await input({}, owner));
+    const mine = await expenses.list(site, { mine: true });
+    expect(mine.rows.length).toBeGreaterThan(0);
+    expect(mine.rows.every((x) => x.createdBy === site.userId)).toBe(true);
+    expect(mine.count).toBe(mine.rows.length);
+  });
+
+  it('BUG-112: approve-all accepts as many ids as the queue shows', async () => {
+    const ids = Array.from({ length: 201 }, () => crypto.randomUUID());
+    const res = await expenses.approveMany(owner, { ids });
+    expect(res.failed).toHaveLength(201);
+  });
+});

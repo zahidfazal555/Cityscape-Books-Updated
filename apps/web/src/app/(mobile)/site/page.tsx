@@ -16,14 +16,21 @@ export default async function SiteHome() {
   const canAdd = can(actor, 'expenses', 'edit');
   const [sites, list] = await Promise.all([
     projectOptions(actor),
-    can(actor, 'expenses', 'view') ? services().expenses.list(actor) : Promise.resolve(null),
+    can(actor, 'expenses', 'view')
+      ? services().expenses.list(actor, { mine: true })
+      : Promise.resolve(null),
   ]);
-  const mine = (list?.rows ?? []).filter((e) => e.createdBy === actor.userId).slice(0, 30);
+  const mine = (list?.rows ?? []).slice(0, 30);
   return (
     <div className="flex flex-col gap-5">
       <h1 className="text-[20px] font-semibold">
         {greeting}, {name.split(' ')[0]}
       </h1>
+      {actor.role === 'site' ? null : (
+        <Link href="/" className="flex min-h-[44px] items-center text-[14px] text-primary">
+          Open the full app →
+        </Link>
+      )}
       {canAdd ? (
         <Link
           href="/site/new"

@@ -11,7 +11,7 @@ export default async function NewSiteExpensePage() {
   const sites = await projectOptions(actor);
   return (
     <div className="flex flex-col gap-4">
-      <Link href="/site" className="text-[14px] text-muted">
+      <Link href="/site" className="flex min-h-[44px] items-center text-[14px] text-muted">
         ← Back
       </Link>
       <h1 className="text-[20px] font-semibold">Add site expense</h1>

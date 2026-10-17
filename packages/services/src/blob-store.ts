@@ -7,7 +7,8 @@ export interface BlobStore {
   get(key: string): Promise<Buffer>;
 }
 
-const KEY = /^[0-9a-f-]{36}\/[0-9a-f-]{36}$/;
+/** `<company>/<attachment>`, or `<company>/<attachment>.t` for its thumbnail. */
+const KEY = /^[0-9a-f-]{36}\/[0-9a-f-]{36}(\.t)?$/;
 
 function assertKey(key: string): void {
   if (!KEY.test(key)) throw new Error('invalid storage key');

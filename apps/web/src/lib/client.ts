@@ -91,6 +91,19 @@ export async function apiFetch<T>(
   return data as T;
 }
 
+/**
+ * A private file (bill photo) as a Blob, through the same refresh-on-401 as apiFetch: a plain
+ * <img src> cannot refresh an expired session (BUG-111).
+ */
+export async function apiBlob(path: string): Promise<Blob> {
+  const send = () => fetch(path, { credentials: 'same-origin' });
+  let res = await send();
+  if (res.status === 401 && (await refreshSession())) res = await send();
+  if (!res.ok)
+    throw new ApiFailure(res.status, { code: 'INTERNAL', message: 'Could not load the file.' });
+  return res.blob();
+}
+
 export { safeNext } from './redirect';
 
 export function newIdempotencyKey(): string {

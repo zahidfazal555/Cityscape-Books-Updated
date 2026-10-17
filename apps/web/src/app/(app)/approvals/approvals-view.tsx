@@ -12,14 +12,25 @@ import { apiFetch } from '@/lib/client';
 import { istDateTime, rupees } from '@/lib/format';
 import { EXPENSE_MODE_LABEL } from '@/lib/purchases';
 import { MODE_LABEL } from '@/lib/sales';
+import { SecureImage } from '@/components/purchases/secure-image';
 import { PhotoLightbox } from '../expenses/expenses-view';
 
 type Tab = 'expenses' | 'payments' | 'discounts';
 
-export function ApprovalsView({ queue }: { queue: ApprovalQueue }) {
+/** Entries dated on or before the lock date cannot post; they can only be rejected (BUG-113). */
+const isLocked = (date: string, lockDate: string | null) => lockDate !== null && date <= lockDate;
+
+export function ApprovalsView({
+  queue,
+  lockDate,
+}: {
+  queue: ApprovalQueue;
+  lockDate: string | null;
+}) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>('expenses');
-  const [photo, setPhoto] = useState<string | null>(null);
+  const [photo, setPhoto] = useState<Expense | null>(null);
+  const approvable = queue.expenses.filter((e) => !isLocked(e.txnDate, lockDate));
   const { busy, error, setError, run } = useAction();
   const reject = (url: string) => {
     const reason = window.prompt('Reason for rejecting (the submitter sees this):');
@@ -31,7 +42,7 @@ export function ApprovalsView({ queue }: { queue: ApprovalQueue }) {
       () =>
         apiFetch<{ failed: { id: string; message: string }[] }>('/api/v1/expenses/approve-bulk', {
           method: 'POST',
-          body: { ids: queue.expenses.map((e) => e.id) },
+          body: { ids: approvable.map((e) => e.id) },
         }),
       (r) => {
         const failed = (r as { failed: { message: string }[] }).failed;
@@ -52,9 +63,9 @@ export function ApprovalsView({ queue }: { queue: ApprovalQueue }) {
         title="Approvals"
         subtitle="Everything entered by someone else waits here before it reaches the books."
         action={
-          tab === 'expenses' && counts.expenses > 1 ? (
+          tab === 'expenses' && approvable.length > 1 ? (
             <Button onClick={approveAll} disabled={busy}>
-              Approve all ({counts.expenses})
+              Approve all ({approvable.length})
             </Button>
           ) : null
         }
@@ -80,7 +91,8 @@ export function ApprovalsView({ queue }: { queue: ApprovalQueue }) {
                 key={e.id}
                 e={e}
                 busy={busy}
-                onPhoto={() => setPhoto(e.attachmentId)}
+                locked={isLocked(e.txnDate, lockDate)}
+                onPhoto={() => setPhoto(e)}
                 onApprove={() =>
                   run(() => apiFetch(`/api/v1/expenses/${e.id}/approve`, { method: 'POST' }))
                 }
@@ -94,6 +106,7 @@ export function ApprovalsView({ queue }: { queue: ApprovalQueue }) {
                 key={p.id}
                 p={p}
                 busy={busy}
+                locked={isLocked(p.payDate, lockDate)}
                 onApprove={() =>
                   run(() => apiFetch(`/api/v1/vendor-payments/${p.id}/approve`, { method: 'POST' }))
                 }
@@ -131,28 +144,43 @@ export function ApprovalsView({ queue }: { queue: ApprovalQueue }) {
             ))
           : null}
       </div>
-      {photo ? <PhotoLightbox id={photo} onClose={() => setPhoto(null)} /> : null}
+      {photo?.attachmentId ? (
+        <PhotoLightbox
+          id={photo.attachmentId}
+          type={photo.attachmentType}
+          onClose={() => setPhoto(null)}
+        />
+      ) : null}
     </>
   );
 }
 
 function Decide({
   busy,
+  locked,
   onApprove,
   onReject,
 }: {
   busy: boolean;
+  locked: boolean;
   onApprove: () => void;
   onReject: () => void;
 }) {
   return (
-    <div className="flex justify-end gap-2">
+    <div className="flex items-center justify-end gap-2">
+      {locked ? (
+        <span className="mr-auto text-xs text-warn">
+          Locked period: reject, or move the lock date.
+        </span>
+      ) : null}
       <Button variant="ghost" onClick={onReject} disabled={busy}>
         Reject
       </Button>
-      <Button onClick={onApprove} disabled={busy}>
-        Approve
-      </Button>
+      {locked ? null : (
+        <Button onClick={onApprove} disabled={busy}>
+          Approve
+        </Button>
+      )}
     </div>
   );
 }
@@ -160,12 +188,14 @@ function Decide({
 function ExpenseCard({
   e,
   busy,
+  locked,
   onPhoto,
   onApprove,
   onReject,
 }: {
   e: Expense;
   busy: boolean;
+  locked: boolean;
   onPhoto: () => void;
   onApprove: () => void;
   onReject: () => void;
@@ -177,13 +207,19 @@ function ExpenseCard({
           type="button"
           onClick={onPhoto}
           aria-label="View bill photo"
-          className="h-[84px] w-[84px] shrink-0 overflow-hidden rounded-md bg-track"
+          className="flex h-[84px] w-[84px] shrink-0 items-center justify-center overflow-hidden rounded-md bg-track"
         >
-          <img
-            src={`/api/v1/attachments/${e.attachmentId}`}
-            alt=""
-            className="h-full w-full object-cover"
-          />
+          {e.attachmentType === 'application/pdf' ? (
+            <span className="text-xs font-semibold text-muted">PDF</span>
+          ) : (
+            // The thumbnail, never the full photo: opening the photo is the audited view.
+            <SecureImage
+              src={`/api/v1/attachments/${e.attachmentId}/thumbnail`}
+              alt=""
+              className="h-full w-full object-cover"
+              fallback="Photo"
+            />
+          )}
         </button>
       ) : (
         <div className="flex h-[84px] w-[84px] shrink-0 items-center justify-center rounded-md bg-track text-xs text-subtle">
@@ -204,7 +240,7 @@ function ExpenseCard({
           {e.submittedBy ?? 'Someone'} · {formatDate(e.txnDate)} · entered{' '}
           {istDateTime(e.submittedAt)}
         </div>
-        <Decide busy={busy} onApprove={onApprove} onReject={onReject} />
+        <Decide busy={busy} locked={locked} onApprove={onApprove} onReject={onReject} />
       </div>
     </article>
   );
@@ -213,11 +249,13 @@ function ExpenseCard({
 function PaymentCard({
   p,
   busy,
+  locked,
   onApprove,
   onReject,
 }: {
   p: VendorPayment;
   busy: boolean;
+  locked: boolean;
   onApprove: () => void;
   onReject: () => void;
 }) {
@@ -237,7 +275,7 @@ function PaymentCard({
         {p.submittedBy ?? 'Someone'} · {formatDate(p.payDate)} · entered{' '}
         {istDateTime(p.submittedAt)}
       </div>
-      <Decide busy={busy} onApprove={onApprove} onReject={onReject} />
+      <Decide busy={busy} locked={locked} onApprove={onApprove} onReject={onReject} />
     </article>
   );
 }

@@ -1,4 +1,4 @@
-import { can, type Actor, type Module } from '@csd/core';
+import { can, canApprove, type Actor, type Module } from '@csd/core';
 
 export interface NavItem {
   label: string;
@@ -80,6 +80,8 @@ export function navFor(actor: Actor): NavGroup[] {
     if (i.module === 'owner') return actor.role === 'owner';
     // The owner reaches the audit trail from Users & security; the auditor gets its own entry.
     if (i.module === 'auditTrail') return actor.role === 'auditor';
+    // H2: only the Owner approves, whatever rights others are given (BUG-115).
+    if (i.module === 'approvals') return canApprove(actor);
     return can(actor, i.module, 'view');
   };
   return GROUPS.map((g) => ({ ...g, items: g.items.filter(visible) })).filter(

@@ -10,7 +10,7 @@ import { services } from '@/lib/server';
 import { PoActions } from './po-actions';
 
 export default async function PoPage({ params }: { params: Promise<{ id: string }> }) {
-  const { actor } = await getSession();
+  const { actor, company } = await getSession();
   const { id } = await params;
   const po = await loadOr404(id, () => services().purchaseOrders.get(actor, id));
   const letterhead = await services()
@@ -32,7 +32,7 @@ export default async function PoPage({ params }: { params: Promise<{ id: string 
         </div>
         <PoActions
           po={po}
-          companyStateCode={letterhead?.stateCode ?? '33'}
+          companyStateCode={company.stateCode}
           rights={{
             edit: can(actor, 'pos', 'edit', po.projectId),
             full: can(actor, 'pos', 'full', po.projectId),

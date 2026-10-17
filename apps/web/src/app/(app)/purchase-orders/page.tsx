@@ -13,13 +13,13 @@ export default async function PurchaseOrdersPage({
 }: {
   searchParams: Promise<{ status?: string }>;
 }) {
-  const { actor } = await getSession();
+  const { actor, company } = await getSession();
   if (!can(actor, 'pos', 'view'))
     return <EmptyState>You do not have access to purchase orders.</EmptyState>;
   const raw = (await searchParams).status;
   const status = STATUSES.find((s) => s === raw) as PoStatus | undefined;
   const canEdit = can(actor, 'pos', 'edit');
-  const [pos, all, vendors, projects, letterhead] = await Promise.all([
+  const [pos, all, vendors, projects] = await Promise.all([
     services().purchaseOrders.list(actor, { status }),
     status ? services().purchaseOrders.list(actor) : Promise.resolve(null),
     canEdit ? vendorOptions(actor) : Promise.resolve([]),
@@ -36,7 +36,7 @@ export default async function PurchaseOrdersPage({
       canEdit={canEdit}
       vendors={vendors}
       projects={projects}
-      companyStateCode={letterhead?.stateCode ?? '33'}
+      companyStateCode={company.stateCode}
     />
   );
 }

@@ -15,7 +15,10 @@ export default async function ExpensesPage({
   if (!can(actor, 'expenses', 'view'))
     return <EmptyState>You do not have access to expenses.</EmptyState>;
   const q = await searchParams;
-  const projects = await projectOptions(actor);
+  const [projects, forms] = await Promise.all([
+    projectOptions(actor, 'filter'),
+    projectOptions(actor, 'spend'),
+  ]);
   const filter = {
     projectId: projects.find((p) => p.id === q.projectId)?.id,
     category: COST_CATEGORIES.find((c) => c === q.category) as CostCategory | undefined,
@@ -27,6 +30,7 @@ export default async function ExpensesPage({
       list={list}
       filter={filter}
       projects={projects}
+      formProjects={forms}
       lockDate={company.lockDate}
       me={actor.userId}
       rights={{
