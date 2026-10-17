@@ -67,6 +67,7 @@ export interface SiteVisit {
   ticketId: string;
   ticketNumber: string;
   subject: string;
+  projectId: string;
   projectCode: string;
   projectName: string;
   siteAddress: string | null;
@@ -129,6 +130,7 @@ const toVisit = (r: Row): SiteVisit => ({
   ticketId: r.ticket_id,
   ticketNumber: r.ticket_number,
   subject: r.subject,
+  projectId: r.project_id,
   projectCode: r.project_code,
   projectName: r.project_name,
   siteAddress: r.site_address,

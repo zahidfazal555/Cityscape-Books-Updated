@@ -291,3 +291,27 @@ describe('third review regressions (auth)', () => {
     await expect(s.users.resendInvite(o, 'abc')).rejects.toMatchObject({ status: 404 });
   });
 });
+
+describe('review regressions (PR 17, auth)', () => {
+  it('BUG-163: a background request (the notification poll) does not count as activity', async () => {
+    const t = await s.auth.login(await emailOf(f.ownerId), PW, {
+      ...client,
+      deviceId: 'owner-laptop',
+    });
+    await superPool.query(
+      `UPDATE session SET last_seen_at = now() - interval '10 minutes' WHERE user_id = $1`,
+      [f.ownerId],
+    );
+    const seen = async () =>
+      (
+        await superPool.query<{ m: number }>(
+          `SELECT extract(epoch FROM now() - max(last_seen_at))::int AS m FROM session WHERE user_id = $1`,
+          [f.ownerId],
+        )
+      ).rows[0]!.m;
+    await s.auth.authenticate(t.accessToken, { background: true });
+    expect(await seen()).toBeGreaterThanOrEqual(590);
+    await s.auth.authenticate(t.accessToken);
+    expect(await seen()).toBeLessThan(5);
+  });
+});

@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { formatDate } from '@csd/core';
+import { can, formatDate } from '@csd/core';
 import { EmptyState } from '@/components/ui';
 import { COVERAGE_LABEL, SLOT_LABEL } from '@/lib/support';
 import { getSession } from '@/lib/session';
@@ -41,7 +41,9 @@ export default async function VisitPage({ params }: { params: Promise<{ id: stri
           </a>
         ) : null}
       </section>
-      {v.status === 'scheduled' ? (
+      {/* BUG-170: only the visit's engineer or a ticket handler may complete it. */}
+      {v.status === 'scheduled' &&
+      (v.engineerId === actor.userId || can(actor, 'tickets', 'edit', v.projectId)) ? (
         <CompleteVisit visitId={v.id} />
       ) : (
         <EmptyState>This visit is {v.status}.</EmptyState>

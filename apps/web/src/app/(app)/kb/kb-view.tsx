@@ -25,7 +25,9 @@ export function KbView({
   templates: ReplyTemplate[];
   rights: { edit: boolean; full: boolean };
 }) {
-  const [reading, setReading] = useState<KbArticle | null>(articles[0] ?? null);
+  // BUG-168: keep the id, so edits and deletes show after a refresh.
+  const [readingId, setReading] = useState<string | null>(articles[0]?.id ?? null);
+  const reading = articles.find((a) => a.id === readingId) ?? articles[0] ?? null;
   const [editing, setEditing] = useState<Editing>(null);
   const remove = useAction();
   const del = (kind: 'articles' | 'templates', id: string) =>
@@ -59,7 +61,7 @@ export function KbView({
                 <li key={a.id}>
                   <button
                     type="button"
-                    onClick={() => setReading(a)}
+                    onClick={() => setReading(a.id)}
                     aria-current={reading?.id === a.id ? 'true' : undefined}
                     className={`w-full rounded-md px-3 py-2 text-left text-[13.5px] ${
                       reading?.id === a.id ? 'bg-primary-tint text-primary' : 'hover:bg-thead'

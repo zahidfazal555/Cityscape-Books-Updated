@@ -4,6 +4,7 @@ import { PNG } from 'pngjs';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Actor } from '@csd/core';
 import {
+  MAX_UNCLAIMED_UPLOADS,
   ApprovalsService,
   AttachmentsService,
   ExpensesService,
@@ -286,9 +287,10 @@ describe('expenses (FR-11, H2)', () => {
     await expect(expenses.approve(owner, p.id)).rejects.toMatchObject({ code: 'VALIDATION' });
   });
 
-  it('BUG-106: a user can hold at most 20 unattached photos', async () => {
+  it('BUG-106/167: a user can hold a bounded number of unattached photos (enough for one visit)', async () => {
     const uploader = actorFor(f, await makeUser(f.companyId, 'site'), 'site', [projectId]);
-    for (let i = 0; i < 20; i++) await files.upload(uploader, JPEG);
+    expect(MAX_UNCLAIMED_UPLOADS).toBeGreaterThanOrEqual(21);
+    for (let i = 0; i < MAX_UNCLAIMED_UPLOADS; i++) await files.upload(uploader, JPEG);
     await expect(files.upload(uploader, JPEG)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
   });
 

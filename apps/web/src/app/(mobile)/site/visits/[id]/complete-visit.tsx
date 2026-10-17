@@ -9,6 +9,7 @@ import { apiFetch, newIdempotencyKey } from '@/lib/client';
 import { downscale } from '@/lib/downscale';
 
 type Phase = 'before' | 'after' | 'bill';
+const MAX_PHOTOS = 10;
 
 /**
  * FR-23.4/23.5: before photos and after photos (required, several at once, from the camera or
@@ -29,27 +30,34 @@ export function CompleteVisit({ visitId }: { visitId: string }) {
   const [idempotencyKey] = useState(newIdempotencyKey);
   const { busy, error, setError, run } = useAction();
 
+  /**
+   * BUG-167: each photo is kept as soon as it is uploaded, so one bad file does not lose the
+   * others; at most 10 per phase (1 bill photo), matching the server.
+   */
   async function add(phase: Phase, files: FileList | null) {
     if (!files || files.length === 0) return;
+    const room =
+      (phase === 'bill' ? 1 : MAX_PHOTOS) - (phase === 'bill' ? 0 : photos[phase].length);
+    const picked = Array.from(files).slice(0, Math.max(0, room));
+    if (picked.length < files.length)
+      setError(`At most ${MAX_PHOTOS} photos each; only the first ${picked.length} were added.`);
+    else setError(null);
     setUploading(phase);
-    setError(null);
-    try {
-      const ids: string[] = [];
-      for (const file of Array.from(files)) {
+    for (const [i, file] of picked.entries()) {
+      try {
         const raw = await downscale(file);
         const r = await apiFetch<{ id: string }>('/api/v1/attachments', { method: 'POST', raw });
-        ids.push(r.id);
+        setPhotos((p) => ({ ...p, [phase]: phase === 'bill' ? [r.id] : [...p[phase], r.id] }));
+      } catch (e) {
+        setError(
+          `Photo ${i + 1} (${file.name}) could not be uploaded: ${e instanceof Error ? e.message : 'try again'}`,
+        );
       }
-      setPhotos((p) => ({
-        ...p,
-        [phase]: phase === 'bill' ? ids.slice(-1) : [...p[phase], ...ids],
-      }));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not upload the photo.');
-    } finally {
-      setUploading(null);
     }
+    setUploading(null);
   }
+  const removePhoto = (phase: Phase, id: string) =>
+    setPhotos((p) => ({ ...p, [phase]: p[phase].filter((x) => x !== id) }));
 
   const hasCost = cost.trim() !== '';
   const save = () =>
@@ -94,6 +102,22 @@ export function CompleteVisit({ visitId }: { visitId: string }) {
             ? `${label}: ${photos[phase].length} added ✓ (tap to add more)`
             : label}
       </label>
+      {photos[phase].length > 0 ? (
+        <ul className="flex flex-wrap gap-2" aria-label={`${label}: added`}>
+          {photos[phase].map((id, i) => (
+            <li key={id}>
+              <button
+                type="button"
+                onClick={() => removePhoto(phase, id)}
+                className="flex h-11 items-center gap-1 rounded-md border border-line px-3 text-[13px]"
+                aria-label={`Remove photo ${i + 1}`}
+              >
+                Photo {i + 1} ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
       <input
         id={`ph-${phase}`}
         type="file"

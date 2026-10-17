@@ -24,8 +24,9 @@ export default async function TicketPage({ params }: { params: Promise<{ id: str
       edit ? s.tickets.engineers(actor) : Promise.resolve([]),
       kb ? s.kb.templates(actor) : Promise.resolve([]),
       kb ? s.kb.articles(actor) : Promise.resolve([]),
-      can(actor, 'quotes', 'edit') ? s.quotations.list(actor) : Promise.resolve([]),
-      can(actor, 'invoices', 'edit', ticket.projectId)
+      // BUG-170: only someone who can link documents needs the candidates.
+      edit && can(actor, 'quotes', 'edit') ? s.quotations.list(actor) : Promise.resolve([]),
+      edit && can(actor, 'invoices', 'edit', ticket.projectId)
         ? s.invoices.list(actor, { projectId: ticket.projectId })
         : Promise.resolve([]),
     ]);
@@ -53,6 +54,7 @@ export default async function TicketPage({ params }: { params: Promise<{ id: str
         templates={templates}
         guides={guides}
         candidates={candidates}
+        now={new Date().toISOString()}
         rights={{
           edit,
           quotes: can(actor, 'quotes', 'edit'),
