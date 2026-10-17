@@ -23,6 +23,12 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
 - Accounts screens: account cards and registers with statement ticks and opening balances, spending by
   staff; outstanding tabs with the ageing bar; GST month view with 3B, GSTR-1, HSN, 11A/11B and the ITC
   register; report tabs with CSV.
+- Payroll (FR-17): monthly staff with payroll runs and payslips (TDS, Tamil Nadu professional tax in
+  September and March, advance recovery), staff advances, daily-wage workers with +1 attendance and
+  wage payments to project labour, and contract jobs paid with TDS u/s 194C. H2: every run, advance,
+  wage or contractor payment and every salary, daily-rate or job-value change by a non-owner waits for
+  the Owner (Approvals → Payroll and Rate changes).
+- Inventory (FR-18): material purchase tracking per project with category totals and audited CSV.
 
 ### Changed
 - H2 approvals are keyed to the Owner role: granting `approvals = full` to another user no longer

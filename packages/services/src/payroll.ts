@@ -271,23 +271,11 @@ export class PayrollService {
     const direct = !requiresApproval(actor);
     return withTenant(this.pool, ctx(actor), async (c) => {
       const id = randomUUID();
-      const rate = direct ? data.rate : 0;
       await c.query(
         `INSERT INTO employee (id, company_id, kind, name, role_title, project_id, monthly_gross, daily_rate,
                                monthly_tds, pt_half_year, recovery_instalment, created_by)
          VALUES ($1, app_company_id(), $2, $3, $4, $5, $6, $7, $8, $9, $10, app_user_id())`,
-        [
-          id,
-          data.kind,
-          data.name,
-          data.roleTitle,
-          salaried ? (data.projectId ?? null) : data.projectId,
-          d(salaried ? rate : 0),
-          d(salaried ? 0 : rate),
-          d(salaried ? data.monthlyTds : 0),
-          d(salaried ? data.ptHalfYear : 0),
-          d(data.recoveryInstalment),
-        ],
+        [id, ...employeeParams(data, direct)],
       );
       if (!direct && data.rate > 0)
         await insertRateChange(c, salaried ? 'monthly_gross' : 'daily_rate', id, 0, data.rate);
@@ -304,12 +292,8 @@ export class PayrollService {
       await payrollLock(c);
       const e = await loadEmployee(c, actor, id, true);
       authorize(actor, 'payroll', 'edit', e.projectId ?? undefined);
-      if (data.projectId !== undefined && data.projectId !== e.projectId) {
-        if (e.kind === 'salaried')
-          throw new DomainError('VALIDATION', 'Staff are not tied to a project.', 'projectId');
-        authorize(actor, 'payroll', 'edit', data.projectId);
-        await assertNoWageBalance(c, e);
-      }
+      if (data.projectId !== undefined && data.projectId !== e.projectId)
+        await assertCanMove(c, actor, e, data.projectId);
       await c.query(
         `UPDATE employee SET name = coalesce($2, name), role_title = coalesce($3, role_title),
                 project_id = coalesce($4, project_id), monthly_tds = coalesce($5, monthly_tds),
@@ -317,16 +301,7 @@ export class PayrollService {
                 recovery_instalment = coalesce($7, recovery_instalment), is_active = coalesce($8, is_active),
                 version = version + 1, updated_by = app_user_id()
           WHERE id = $1`,
-        [
-          id,
-          data.name ?? null,
-          data.roleTitle ?? null,
-          data.projectId ?? null,
-          e.kind === 'salaried' && data.monthlyTds !== undefined ? d(data.monthlyTds) : null,
-          e.kind === 'salaried' && data.ptHalfYear !== undefined ? d(data.ptHalfYear) : null,
-          data.recoveryInstalment === undefined ? null : d(data.recoveryInstalment),
-          data.isActive ?? null,
-        ],
+        [id, ...updateParams(data, e.kind === 'salaried')],
       );
       await writeAudit(c, { action: 'update', entity: 'employee', entityId: id, after: data });
     });
@@ -631,7 +606,9 @@ export class PayrollService {
       assertPending(e, ENTRY.payroll_run);
       assertNotLocked(e.date, (await companyRow(c)).lock_date, 'payDate');
       const { rows } = await c.query<RunRow>(`${RUN_SELECT} AND r.id = $1`, [id]);
-      const run = toRun(rows[0]!, []);
+      const row = rows[0];
+      if (!row) throw new DomainError('NOT_FOUND', 'Payroll run not found.');
+      const run = toRun(row, []);
       const journalId = await postRun(
         c,
         id,
@@ -798,6 +775,50 @@ export async function jobCommitted(c: pg.PoolClient, jobId: string): Promise<Pai
   return p(rows[0]?.n ?? '0');
 }
 
+/** Insert parameters $2…$10 for a new employee; a non-owner's rate starts at 0 (H2). */
+function employeeParams(data: z.output<typeof employeeSchema>, direct: boolean): unknown[] {
+  const salaried = data.kind === 'salaried';
+  const rate = direct ? data.rate : 0;
+  return [
+    data.kind,
+    data.name,
+    data.roleTitle,
+    data.projectId ?? null,
+    d(salaried ? rate : 0),
+    d(salaried ? 0 : rate),
+    d(salaried ? data.monthlyTds : 0),
+    d(salaried ? data.ptHalfYear : 0),
+    d(data.recoveryInstalment),
+  ];
+}
+
+/** Update parameters $2…$8; NULL keeps the old value. TDS and PT apply to staff only. */
+function updateParams(data: z.output<typeof employeeUpdate>, salaried: boolean): unknown[] {
+  const money = (v: Paise | undefined) => (v === undefined ? null : d(v));
+  return [
+    data.name ?? null,
+    data.roleTitle ?? null,
+    data.projectId ?? null,
+    salaried ? money(data.monthlyTds) : null,
+    salaried ? money(data.ptHalfYear) : null,
+    money(data.recoveryInstalment),
+    data.isActive ?? null,
+  ];
+}
+
+/** Only a worker moves project, into one the actor may edit, once their wages are settled. */
+async function assertCanMove(
+  c: pg.PoolClient,
+  actor: Actor,
+  e: Employee,
+  projectId: string,
+): Promise<void> {
+  if (e.kind === 'salaried')
+    throw new DomainError('VALIDATION', 'Staff are not tied to a project.', 'projectId');
+  authorize(actor, 'payroll', 'edit', projectId);
+  await assertNoWageBalance(c, e);
+}
+
 /** A worker moves project only once their wages there are settled. */
 async function assertNoWageBalance(c: pg.PoolClient, e: Employee): Promise<void> {
   const { rows } = await c.query<{ earned: string; paid: string }>(
@@ -863,7 +884,9 @@ export async function pendingAdvances(c: pg.PoolClient): Promise<StaffAdvance[]>
 
 async function advanceById(c: pg.PoolClient, id: string): Promise<StaffAdvance> {
   const { rows } = await c.query<AdvanceRow>(`${ADVANCE_SELECT} AND a.id = $1`, [id]);
-  return toAdvance(rows[0]!);
+  const r = rows[0];
+  if (!r) throw new DomainError('NOT_FOUND', 'Advance not found.');
+  return toAdvance(r);
 }
 
 async function postAdvance(

@@ -696,7 +696,9 @@ async function paymentById(
   id: string,
 ): Promise<LabourPayment> {
   const { rows } = await c.query<PaymentRow>(`${PAYMENT_SELECT[kind]} AND x.id = $1`, [id]);
-  return toPayment(kind)(rows[0]!);
+  const r = rows[0];
+  if (!r) throw new DomainError('NOT_FOUND', 'Payment not found.');
+  return toPayment(kind)(r);
 }
 
 async function postWage(

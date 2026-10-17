@@ -190,7 +190,8 @@ export class InventoryService {
           data.billId ?? null,
         ],
       );
-      const id = rows[0]!.id;
+      const id = rows[0]?.id;
+      if (!id) throw new DomainError('NOT_FOUND', 'Purchase not saved.');
       await writeAudit(c, {
         action: 'create',
         entity: 'material_purchase',
