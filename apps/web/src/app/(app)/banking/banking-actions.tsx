@@ -1,68 +1,109 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { parseRupees } from '@csd/core';
 import { Button, Field, FormError, Input } from '@/components/ui';
 import { Drawer } from '@/components/kit';
 import { useAction } from '@/components/sales/use-action';
-import { apiFetch } from '@/lib/client';
+import { apiFetch, newIdempotencyKey } from '@/lib/client';
 
-/** "-1,500" → −150000 paise (an overdraft); the amount itself is parsed as usual. */
-function signedPaise(text: string): number {
-  const t = text.trim();
-  const negative = t.startsWith('-');
-  const p = parseRupees((negative ? t.slice(1) : t) || '0', 'amount');
-  return negative ? -p : p;
-}
-
-/** Statement-match tick for one register line; it reverts if the save fails. */
+/** Statement-match tick: refreshes the counts after saving and says so if it fails (BUG-135). */
 export function MatchBox({
   lineId,
   matched,
   disabled,
+  label,
 }: {
   lineId: string;
   matched: boolean;
   disabled: boolean;
+  label: string;
 }) {
+  const router = useRouter();
   const [on, setOn] = useState(matched);
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
   return (
-    <input
-      type="checkbox"
-      aria-label="Matched with statement"
-      className="h-5 w-5"
-      checked={on}
-      disabled={disabled || busy}
-      onChange={(e) => {
-        const next = e.target.checked;
-        setOn(next);
-        setBusy(true);
-        apiFetch(`/api/v1/banking/lines/${lineId}/match`, {
-          method: 'POST',
-          body: { matched: next },
-        })
-          .catch(() => setOn(!next))
-          .finally(() => setBusy(false));
-      }}
-    />
+    <span className="inline-flex items-center gap-1">
+      <input
+        type="checkbox"
+        aria-label={label}
+        title={disabled ? 'You can view the register but not tick it.' : undefined}
+        className="h-5 w-5"
+        checked={on}
+        disabled={disabled || busy}
+        onChange={(e) => {
+          const next = e.target.checked;
+          setOn(next);
+          setBusy(true);
+          setFailed(false);
+          apiFetch(`/api/v1/banking/lines/${lineId}/match`, {
+            method: 'POST',
+            body: { matched: next },
+          })
+            .then(() => router.refresh())
+            .catch(() => {
+              setOn(matched);
+              setFailed(true);
+            })
+            .finally(() => setBusy(false));
+        }}
+      />
+      {failed ? (
+        <span role="alert" className="text-[11px] text-danger">
+          Not saved
+        </span>
+      ) : null}
+    </span>
   );
 }
 
-/** Owner only: an account's opening balance as on a date (FR-13.1). */
-export function OpeningBalance({ code }: { code: string }) {
+/**
+ * Owner only: an account's opening balance as on a date (FR-13.1). A blank amount is refused;
+ * zero (removing the opening) must be typed and confirmed (BUG-132).
+ */
+export function OpeningBalance({ code, name }: { code: string; name: string }) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [amount, setAmount] = useState('');
   const [asOf, setAsOf] = useState('');
-  const { busy, error, run } = useAction();
+  const [idempotencyKey, setKey] = useState(newIdempotencyKey);
+  const { busy, error, setError, run } = useAction();
+  const save = () => {
+    if (!amount.trim()) {
+      setError('Enter the opening balance (0 removes it).');
+      return;
+    }
+    const paise = parseRupees(amount.trim(), 'amount');
+    if (paise === 0 && !window.confirm(`Remove the opening balance of ${name}?`)) return;
+    void run(
+      () =>
+        apiFetch('/api/v1/banking/opening', {
+          method: 'POST',
+          idempotencyKey,
+          body: { code, amount: paise, asOf },
+        }),
+      () => {
+        setOpen(false);
+        router.refresh();
+      },
+    );
+  };
   return (
     <>
-      <Button variant="ghost" onClick={() => setOpen(true)}>
+      <Button
+        variant="ghost"
+        onClick={() => {
+          setKey(newIdempotencyKey());
+          setOpen(true);
+        }}
+      >
         Opening balance
       </Button>
       {open ? (
         <Drawer
-          title="Opening balance"
+          title={`Opening balance · ${name}`}
           width={440}
           onClose={() => setOpen(false)}
           footer={
@@ -70,19 +111,7 @@ export function OpeningBalance({ code }: { code: string }) {
               <Button variant="ghost" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button
-                disabled={busy}
-                onClick={() =>
-                  run(
-                    () =>
-                      apiFetch('/api/v1/banking/opening', {
-                        method: 'POST',
-                        body: { code, amount: signedPaise(amount), asOf },
-                      }),
-                    () => window.location.reload(),
-                  )
-                }
-              >
+              <Button disabled={busy} onClick={save}>
                 Save
               </Button>
             </>
@@ -90,8 +119,8 @@ export function OpeningBalance({ code }: { code: string }) {
         >
           <div className="flex flex-col gap-4">
             <p className="text-[13px] text-muted">
-              Enter the balance from the statement at the start date. Entering it again replaces the
-              earlier figure. Use a minus sign for an overdraft.
+              Enter the balance of <strong>{name}</strong> from the statement at the start date.
+              Entering it again replaces the earlier figure. Use a minus sign for an overdraft.
             </p>
             <Field label="Amount (₹)" htmlFor="ob-amount">
               <Input

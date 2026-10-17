@@ -2,6 +2,7 @@ import {
   addHeads,
   can,
   formatDate,
+  monthRange,
   projectScope,
   todayIn,
   type Paise,
@@ -33,6 +34,28 @@ function recentPeriods(today: string): string[] {
 }
 
 const total = (t: TaxHeads): Paise => t.igst + t.cgst + t.sgst;
+const NONE: TaxHeads = { igst: 0, cgst: 0, sgst: 0 };
+
+/** A well-formed, real month from the URL, else the current one (BUG-139). */
+function validPeriod(raw: string | undefined, fallback: string): string {
+  if (!raw || !/^\d{4}-\d{2}$/.test(raw)) return fallback;
+  try {
+    monthRange(raw);
+    return raw;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Card for what the month leaves: cash to pay, credit to carry, or both (BUG-140). */
+function balanceCards(m: GstMonth): [string, string][] {
+  const cash = total(m.setOff.cash);
+  const carry = total(m.setOff.carryForward);
+  const out: [string, string][] = [];
+  if (cash > 0 || carry === 0) out.push([`Net payable by ${formatDate(m.dueDate)}`, rupees(cash)]);
+  if (carry > 0) out.push(['ITC carried forward', rupees(carry)]);
+  return out;
+}
 
 function TaxCells({ t }: { t: TaxHeads }) {
   return (
@@ -49,18 +72,16 @@ export default async function GstPage({
 }: {
   searchParams: Promise<{ period?: string }>;
 }) {
-  const { actor } = await getSession();
+  const { actor, company } = await getSession();
   if (!can(actor, 'gst', 'view') || projectScope(actor) !== null)
     return <EmptyState>GST returns need GST rights and access to all projects.</EmptyState>;
-  const periods = recentPeriods(todayIn());
-  const raw = (await searchParams).period;
-  const period = raw && /^\d{4}-\d{2}$/.test(raw) ? raw : (periods.at(-1) ?? todayIn().slice(0, 7));
+  const today = todayIn();
+  const recent = recentPeriods(today);
+  const period = validPeriod((await searchParams).period, today.slice(0, 7));
+  // A month picked from an older link still gets its own chip.
+  const periods = recent.includes(period) ? recent : [period, ...recent];
   const m = await services().gst.month(actor, period);
-  const output = addHeads(
-    m.outward.tax,
-    addHeads(m.advancesReceived.tax, m.advancesAdjusted.tax, -1),
-  );
-  const cash = total(m.setOff.cash);
+  const { gstin } = company;
   const label = (p: string) => MONTH.format(new Date(`${p}-01T00:00:00Z`));
   return (
     <div className="flex flex-col gap-5">
@@ -69,7 +90,16 @@ export default async function GstPage({
         subtitle={`GSTR-1 due ${formatDate(m.gstr1DueDate)} · GSTR-3B and payment due ${formatDate(m.dueDate)}`}
         action={
           <div className="flex gap-2">
-            <DownloadLink href={`/api/v1/gst/${period}/gstr1`}>GSTR-1 JSON</DownloadLink>
+            {gstin ? (
+              <DownloadLink href={`/api/v1/gst/${period}/gstr1`}>GSTR-1 JSON</DownloadLink>
+            ) : (
+              <span
+                className="self-center text-xs text-muted"
+                title="Add the company GSTIN in Settings to export GSTR-1."
+              >
+                GSTR-1 JSON needs the company GSTIN (Settings)
+              </span>
+            )}
             <DownloadLink href={`/api/v1/gst/${period}/export`}>CSV</DownloadLink>
           </div>
         }
@@ -80,11 +110,9 @@ export default async function GstPage({
       />
       <Cards
         items={[
-          ['Output tax', rupees(total(output))],
-          ['Input tax credit', rupees(total(m.itc) + total(m.openingCredit))],
-          cash > 0
-            ? [`Net payable by ${formatDate(m.dueDate)}`, rupees(cash)]
-            : ['ITC carried forward', rupees(total(m.setOff.carryForward))],
+          ['Output tax', rupees(total(m.liability))],
+          ['Input tax credit', rupees(total(m.setOff.creditUsed) + total(m.setOff.carryForward))],
+          ...balanceCards(m),
         ]}
       />
       <Summary3B m={m} />
@@ -138,7 +166,9 @@ export default async function GstPage({
                     {a.receiptNumber} · {a.proformaNumber}
                   </span>
                   <span className="text-muted">{a.event}</span>
-                  <span className="num text-right">{rupees(a.amount)}</span>
+                  <span className="num text-right">
+                    {rupees(t === '11B' ? -a.amount : a.amount)}
+                  </span>
                   <span className="num text-right">
                     {rupees(t === '11B' ? -total(a.tax) : total(a.tax))}
                   </span>
@@ -192,54 +222,79 @@ function Summary3B({ m }: { m: GstMonth }) {
           <span />
           <TaxCells t={m.setOff.cash} />
         </Row>
+        <Row>
+          <span>Credit carried forward to next month</span>
+          <span />
+          <TaxCells t={m.setOff.carryForward} />
+        </Row>
       </Table>
     </section>
   );
 }
 
 function Gstr1Documents({ m }: { m: GstMonth }) {
+  if (m.invoices.length + m.creditNotes.length === 0)
+    return (
+      <section>
+        <h2 className="mb-2 text-[15px] font-semibold">GSTR-1 · invoices and credit notes</h2>
+        <EmptyState>No outward supplies this month.</EmptyState>
+      </section>
+    );
+  return (
+    <>
+      <DocTable title="GSTR-1 · invoices" docs={m.invoices} sign={1} />
+      {m.creditNotes.length > 0 ? (
+        <DocTable title="GSTR-1 · credit notes (CDNR / CDNUR)" docs={m.creditNotes} sign={-1} />
+      ) : null}
+    </>
+  );
+}
+
+/** One GSTR-1 table; credit notes show as negatives so they read as reductions (BUG-141). */
+function DocTable({
+  title,
+  docs,
+  sign,
+}: {
+  title: string;
+  docs: readonly (GstMonth['invoices'][number] | GstMonth['creditNotes'][number])[];
+  sign: 1 | -1;
+}) {
   return (
     <section>
-      <h2 className="mb-2 text-[15px] font-semibold">GSTR-1 · invoices and credit notes</h2>
-      {m.invoices.length + m.creditNotes.length === 0 ? (
-        <EmptyState>No outward supplies this month.</EmptyState>
-      ) : (
-        <Table columns="1.1fr 0.8fr 0.6fr 1.3fr 0.5fr 0.5fr 1fr 0.9fr 0.9fr 0.9fr" minWidth={1120}>
-          <Row head>
-            <span>Number</span>
-            <span>Date</span>
-            <span>Type</span>
-            <span>GSTIN</span>
-            <span>POS</span>
-            <span>Rate</span>
-            <span className="text-right">Taxable</span>
-            <span className="text-right">IGST</span>
-            <span className="text-right">CGST</span>
-            <span className="text-right">SGST</span>
-          </Row>
-          {[
-            ...m.invoices.map((d) => ({ d, cn: false })),
-            ...m.creditNotes.map((d) => ({ d, cn: true })),
-          ].flatMap(({ d, cn }) =>
-            d.items.map((it) => (
-              <Row key={`${d.number}-${it.rate}`}>
-                <span className="font-mono text-[12px]">{d.number}</span>
-                <span className="text-muted">{formatDate(d.date)}</span>
-                <span>
-                  <Pill tone={cn ? 'red' : d.ctin ? 'blue' : 'grey'}>
-                    {cn ? 'CN' : d.ctin ? 'B2B' : 'B2C'}
-                  </Pill>
-                </span>
-                <span className="truncate font-mono text-[11.5px] text-muted">{d.ctin ?? '—'}</span>
-                <span>{d.pos}</span>
-                <span>{it.rate}%</span>
-                <span className="num text-right">{rupees(cn ? -it.taxable : it.taxable)}</span>
-                <TaxCells t={cn ? addHeads({ igst: 0, cgst: 0, sgst: 0 }, it.tax, -1) : it.tax} />
-              </Row>
-            )),
-          )}
-        </Table>
-      )}
+      <h2 className="mb-2 text-[15px] font-semibold">{title}</h2>
+      <Table columns="1.1fr 0.8fr 0.6fr 1.3fr 0.5fr 0.5fr 1fr 0.9fr 0.9fr 0.9fr" minWidth={1120}>
+        <Row head>
+          <span>Number</span>
+          <span>Date</span>
+          <span>Type</span>
+          <span>GSTIN</span>
+          <span>POS</span>
+          <span>Rate</span>
+          <span className="text-right">Taxable</span>
+          <span className="text-right">IGST</span>
+          <span className="text-right">CGST</span>
+          <span className="text-right">SGST</span>
+        </Row>
+        {docs.flatMap((d) =>
+          d.items.map((it) => (
+            <Row key={`${d.number}-${it.rate}`}>
+              <span className="font-mono text-[12px]">{d.number}</span>
+              <span className="text-muted">{formatDate(d.date)}</span>
+              <span>
+                <Pill tone={sign < 0 ? 'red' : d.ctin ? 'blue' : 'grey'}>
+                  {d.ctin ? 'B2B' : 'B2C'}
+                </Pill>
+              </span>
+              <span className="truncate font-mono text-[11.5px] text-muted">{d.ctin ?? '—'}</span>
+              <span>{d.pos}</span>
+              <span>{it.rate}%</span>
+              <span className="num text-right">{rupees(sign * it.taxable)}</span>
+              <TaxCells t={addHeads(NONE, it.tax, sign)} />
+            </Row>
+          )),
+        )}
+      </Table>
     </section>
   );
 }

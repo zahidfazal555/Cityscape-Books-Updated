@@ -35,11 +35,12 @@ export class SettingsService {
   /** What every signed-in user may see: company name, lock date and FY (header, nav, dates). */
   async companyInfo(
     actor: Actor,
-  ): Promise<Pick<CompanySettings, 'name' | 'lockDate' | 'fyStartMonth' | 'stateCode'>> {
+  ): Promise<Pick<CompanySettings, 'name' | 'lockDate' | 'fyStartMonth' | 'stateCode' | 'gstin'>> {
     if (!actor.active) throw new DomainError('UNAUTHENTICATED', 'Please sign in again.');
-    const { name, lockDate, fyStartMonth, stateCode } = await this.read(actor);
-    // The GST state drives CGST+SGST vs IGST previews on every form (BUG-116).
-    return { name, lockDate, fyStartMonth, stateCode };
+    const { name, lockDate, fyStartMonth, stateCode, gstin } = await this.read(actor);
+    // The GST state drives CGST+SGST vs IGST previews on every form (BUG-116); the GSTIN
+    // decides whether a GSTR-1 file can be produced (BUG-138).
+    return { name, lockDate, fyStartMonth, stateCode, gstin };
   }
 
   /**

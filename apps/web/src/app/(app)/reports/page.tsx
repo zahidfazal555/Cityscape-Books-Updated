@@ -1,4 +1,13 @@
-import { CATEGORY_LABEL, COST_CATEGORIES, can, projectScope, type Actor } from '@csd/core';
+import {
+  CATEGORY_LABEL,
+  COST_CATEGORIES,
+  can,
+  formatDate,
+  parseIsoDate,
+  projectScope,
+  todayIn,
+  type Actor,
+} from '@csd/core';
 import type { ProjectFigures } from '@csd/services';
 import { PageHeader, Row, Table } from '@/components/kit';
 import { DownloadLink, LinkTabs } from '@/components/accounts/tabs';
@@ -29,6 +38,17 @@ function tabsFor(actor: Actor): { value: Tab; label: string; href: string }[] {
         ]
       : []),
   ];
+}
+
+/** A real date from the URL, or undefined (BUG-137). */
+function validDate(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  try {
+    parseIsoDate(raw);
+    return raw;
+  } catch {
+    return undefined;
+  }
 }
 
 const pct = (m: number | null | undefined) =>
@@ -78,7 +98,7 @@ function ProjectTable({ rows, withProfit }: { rows: ProjectFigures[]; withProfit
   );
 }
 
-async function body(actor: Actor, tab: Tab) {
+async function body(actor: Actor, tab: Tab, asOf: string) {
   const r = services().reports;
   if (tab === 'pnl') return <ProjectTable rows={await r.projectPnl(actor)} withProfit />;
   if (tab === 'income-expense') {
@@ -110,12 +130,39 @@ async function body(actor: Actor, tab: Tab) {
             <span className="num text-right font-medium">{rupees(x.total)}</span>
           </Row>
         ))}
+        <Row>
+          <span className="font-semibold">Total</span>
+          {COST_CATEGORIES.map((c) => (
+            <span key={c} className="num text-right font-semibold">
+              {p.totals[c] ? rupees(p.totals[c]) : ''}
+            </span>
+          ))}
+          <span className="num text-right font-semibold">
+            {rupees(COST_CATEGORIES.reduce((n, c) => n + p.totals[c], 0))}
+          </span>
+        </Row>
       </Table>
     );
   }
-  const tb = await r.trialBalance(actor);
+  const tb = await r.trialBalance(actor, asOf);
   return (
     <div className="flex flex-col gap-3">
+      <form method="get" className="flex flex-wrap items-end gap-2 text-[13px]">
+        <input type="hidden" name="tab" value="trial-balance" />
+        <label className="flex flex-col gap-1">
+          <span className="text-muted">As at</span>
+          <input
+            type="date"
+            name="asOf"
+            defaultValue={asOf}
+            className="h-9 rounded-md border border-line bg-white px-2"
+          />
+        </label>
+        <button type="submit" className="h-9 rounded-md border border-line bg-white px-3">
+          Show
+        </button>
+        <span className="self-center text-muted">Balances as at {formatDate(tb.asOf)}</span>
+      </form>
       <p
         role="status"
         className={`rounded-md px-3 py-2 text-[13px] font-medium ${tb.balanced ? 'bg-success-bg text-success' : 'bg-danger-bg text-danger'}`}
@@ -148,27 +195,30 @@ async function body(actor: Actor, tab: Tab) {
 export default async function ReportsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; asOf?: string }>;
 }) {
   const { actor } = await getSession();
   if (!can(actor, 'reports', 'view'))
     return <EmptyState>You do not have access to reports.</EmptyState>;
   const tabs = tabsFor(actor);
-  const raw = (await searchParams).tab;
-  const tab = tabs.find((t) => t.value === raw)?.value ?? 'income-expense';
+  const sp = await searchParams;
+  const tab = tabs.find((t) => t.value === sp.tab)?.value ?? 'income-expense';
+  const asOf = validDate(sp.asOf) ?? todayIn();
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Reports"
         subtitle="From the books: approved entries only."
         action={
-          <DownloadLink href={`/api/v1/reports/${tab}/export`}>
+          <DownloadLink
+            href={`/api/v1/reports/${tab}/export${tab === 'trial-balance' ? `?asOf=${asOf}` : ''}`}
+          >
             Export this report (CSV)
           </DownloadLink>
         }
       />
       <LinkTabs value={tab} items={tabs} />
-      {await body(actor, tab)}
+      {await body(actor, tab, asOf)}
     </div>
   );
 }

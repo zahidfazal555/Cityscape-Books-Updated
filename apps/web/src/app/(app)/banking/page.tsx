@@ -1,7 +1,9 @@
 import Link from 'next/link';
+import { parseIsoDate } from '@csd/core';
 import { can, formatDate, projectScope } from '@csd/core';
 import { MONEY_ACCOUNTS, type MoneyAccount } from '@csd/services';
 import { PageHeader, Row, Table } from '@/components/kit';
+import { DownloadLink } from '@/components/accounts/tabs';
 import { EmptyState } from '@/components/ui';
 import { rupees } from '@/lib/format';
 import { getSession } from '@/lib/session';
@@ -11,7 +13,7 @@ import { MatchBox, OpeningBalance } from './banking-actions';
 export default async function BankingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ account?: string; from?: string; to?: string }>;
+  searchParams: Promise<{ account?: string; from?: string | string[]; to?: string | string[] }>;
 }) {
   const { actor } = await getSession();
   if (!can(actor, 'banking', 'view') || projectScope(actor) !== null)
@@ -20,7 +22,11 @@ export default async function BankingPage({
     );
   const q = await searchParams;
   const code = (MONEY_ACCOUNTS.find((a) => a === q.account) ?? '1010') as MoneyAccount;
-  const range = { ...(q.from ? { from: q.from } : {}), ...(q.to ? { to: q.to } : {}) };
+  const range = validRange(q.from, q.to);
+  const keep = new URLSearchParams({
+    ...(range.from ? { from: range.from } : {}),
+    ...(range.to ? { to: range.to } : {}),
+  });
   const [cards, register, staff] = await Promise.all([
     services().banking.accounts(actor),
     services().banking.register(actor, code, range),
@@ -32,13 +38,24 @@ export default async function BankingPage({
       <PageHeader
         title="Cash, bank & UPI"
         subtitle="Registers straight from the books. Tick each line once it appears on the statement."
-        action={actor.role === 'owner' ? <OpeningBalance code={code} /> : null}
+        action={
+          <div className="flex gap-2">
+            <DownloadLink
+              href={`/api/v1/banking/accounts/${code}/export${keep.size ? `?${keep.toString()}` : ''}`}
+            >
+              Export CSV
+            </DownloadLink>
+            {actor.role === 'owner' ? (
+              <OpeningBalance code={code} name={cards.find((c) => c.code === code)?.name ?? code} />
+            ) : null}
+          </div>
+        }
       />
       <div className="grid gap-3 sm:grid-cols-3">
         {cards.map((c) => (
           <Link
             key={c.code}
-            href={`/banking?account=${c.code}`}
+            href={`/banking?account=${c.code}${keep.size ? `&${keep.toString()}` : ''}`}
             aria-current={c.code === code ? 'true' : undefined}
             className={`rounded-lg border bg-white p-4 ${c.code === code ? 'border-primary ring-2 ring-primary-tint' : 'border-line'}`}
           >
@@ -117,7 +134,12 @@ export default async function BankingPage({
                     —
                   </span>
                 ) : (
-                  <MatchBox lineId={l.lineId} matched={l.matched} disabled={!canMatch} />
+                  <MatchBox
+                    lineId={l.lineId}
+                    matched={l.matched}
+                    disabled={!canMatch}
+                    label={`Matched with statement: ${formatDate(l.date)} ${l.particulars}`}
+                  />
                 )}
               </span>
               <span className="text-muted">{formatDate(l.date)}</span>
@@ -163,4 +185,24 @@ export default async function BankingPage({
       </section>
     </div>
   );
+}
+
+/** BUG-133: dates from the URL are checked here; anything invalid falls back to the defaults. */
+function validRange(
+  from?: string | string[],
+  to?: string | string[],
+): { from?: string; to?: string } {
+  const ok = (v?: string | string[]): string | undefined => {
+    if (typeof v !== 'string') return undefined;
+    try {
+      parseIsoDate(v);
+      return v;
+    } catch {
+      return undefined;
+    }
+  };
+  const f = ok(from);
+  const t = ok(to);
+  if (f && t && f > t) return { from: t, to: f };
+  return { ...(f ? { from: f } : {}), ...(t ? { to: t } : {}) };
 }

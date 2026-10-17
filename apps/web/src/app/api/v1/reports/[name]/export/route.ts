@@ -10,7 +10,7 @@ const NAMES = ['income-expense', 'pnl', 'category', 'trial-balance'] as const;
 type Name = (typeof NAMES)[number];
 const d = toDecimalString;
 
-async function rowsFor(actor: Actor, name: Name): Promise<(string | number)[][]> {
+async function rowsFor(actor: Actor, name: Name, asOf?: string): Promise<(string | number)[][]> {
   const r = services().reports;
   if (name === 'category') {
     const p = await r.categoryPivot(actor);
@@ -21,10 +21,15 @@ async function rowsFor(actor: Actor, name: Name): Promise<(string | number)[][]>
         ...COST_CATEGORIES.map((c) => d(x.byCategory[c])),
         d(x.total),
       ]),
+      [
+        'Total',
+        ...COST_CATEGORIES.map((c) => d(p.totals[c])),
+        d(COST_CATEGORIES.reduce((n, c) => n + p.totals[c], 0)),
+      ],
     ];
   }
   if (name === 'trial-balance') {
-    const t = await r.trialBalance(actor);
+    const t = await r.trialBalance(actor, asOf);
     return [
       ['Code', 'Account', 'Type', 'Debit', 'Credit'],
       ...t.rows.map((x) => [x.code, x.name, x.type, d(x.debit), d(x.credit)]),
@@ -62,9 +67,12 @@ async function rowsFor(actor: Actor, name: Name): Promise<(string | number)[][]>
 }
 
 /** "Export this report (CSV)" (FR-16.4), audited (H4). */
-export const GET = api<{ name: string }>(async ({ actor, params }) => {
+const query = z.object({ asOf: z.string().optional() });
+
+export const GET = api<{ name: string }>(async ({ actor, params, req }) => {
   const name = input(z.enum(NAMES), params.name);
-  const rows = await rowsFor(actor, name);
+  const { asOf } = input(query, Object.fromEntries(req.nextUrl.searchParams));
+  const rows = await rowsFor(actor, name, asOf);
   await services().reports.recordExport(actor, name, rows.length - 1);
   return csvResponse(`report-${name}`, rows);
 });

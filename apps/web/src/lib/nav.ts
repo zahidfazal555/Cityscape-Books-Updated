@@ -1,4 +1,4 @@
-import { can, canApprove, type Actor, type Module } from '@csd/core';
+import { can, canApprove, projectScope, type Actor, type Module } from '@csd/core';
 
 export interface NavItem {
   label: string;
@@ -82,6 +82,9 @@ export function navFor(actor: Actor): NavGroup[] {
     if (i.module === 'auditTrail') return actor.role === 'auditor';
     // H2: only the Owner approves, whatever rights others are given (BUG-115).
     if (i.module === 'approvals') return canApprove(actor);
+    // Company-wide books: a user limited to some projects would only reach "no access" (BUG-134).
+    if (i.module === 'banking' || i.module === 'gst')
+      return can(actor, i.module, 'view') && projectScope(actor) === null;
     return can(actor, i.module, 'view');
   };
   return GROUPS.map((g) => ({ ...g, items: g.items.filter(visible) })).filter(

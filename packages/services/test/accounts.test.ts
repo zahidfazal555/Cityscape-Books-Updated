@@ -373,4 +373,13 @@ describe('review regressions (PR 12)', () => {
       code: 'FORBIDDEN',
     });
   });
+
+  it('BUG-137: the trial balance as at a bad date is a validation error, not a database error', async () => {
+    await expect(reports.trialBalance(owner, '2026-02-30')).rejects.toMatchObject({
+      code: 'VALIDATION',
+    });
+    const past = await reports.trialBalance(owner, '2000-01-01');
+    expect(past.debit).toBe(0);
+    expect(past.balanced).toBe(true);
+  });
 });
