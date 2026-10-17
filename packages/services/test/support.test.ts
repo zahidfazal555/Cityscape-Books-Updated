@@ -6,6 +6,8 @@ import {
   ExpensesService,
   InvoicesService,
   KnowledgeBaseService,
+  NotificationsService,
+  QuotationsService,
   MemoryBlobStore,
   SupportDashboardService,
   TicketBillingService,
@@ -360,5 +362,174 @@ describe('locks and scope', () => {
     } finally {
       await setLock(f.companyId, null);
     }
+  });
+});
+
+describe('review regressions (PR 16)', () => {
+  const completeWithCost = async (visitId: string) =>
+    visits.complete(site, visitId, {
+      beforeIds: [await photo(site)],
+      afterIds: [await photo(site)],
+      workDone: 'Fixed hinge',
+      cost: 500_00,
+      billPhotoId: await photo(site),
+    });
+
+  it('BUG-154: a visit cost on a handed-over (Completed) project can be approved', async () => {
+    const t = await tickets.create(asst, {
+      projectId: handedOver,
+      type: 'warranty',
+      subject: 'Hinge',
+      channel: 'phone',
+    });
+    const { id } = await visits.schedule(asst, t.id, {
+      visitDate: '2099-12-31',
+      slot: 'morning',
+      engineerId: site.userId,
+    });
+    const { expenseId } = await completeWithCost(id);
+    await expenses.approve(owner, expenseId!);
+    expect((await expenses.get(owner, expenseId!)).status).toBe('approved');
+  });
+
+  it('BUG-155/156: a ticket quotation accepts onto the ticket project, even after handover, and no other', async () => {
+    const { rows } = await superPool.query<{ client_id: string }>(
+      `SELECT client_id FROM project WHERE id = $1`,
+      [handedOver],
+    );
+    const clientId = rows[0]!.client_id;
+    const quotes = new QuotationsService(appPool);
+    const mk = async () => {
+      const q = await quotes.create(owner, {
+        clientId,
+        title: 'Service: re-laminate',
+        quoteDate: '2026-10-15',
+        validTill: '2026-11-15',
+        lines: [
+          { description: 'Labour', qtyMilli: 1000, unit: 'lot', rate: 5_000_00, gstRate: 18 },
+        ],
+      });
+      const t = await tickets.create(asst, {
+        projectId: handedOver,
+        type: 'snag',
+        subject: 'Quote',
+        channel: 'phone',
+      });
+      await billing.link(owner, t.id, { kind: 'quotation', id: q.id });
+      await quotes.send(owner, q.id);
+      return q.id;
+    };
+    const a = await mk();
+    expect((await quotes.accept(owner, a)).projectId).toBe(handedOver);
+    const b = await mk();
+    await expect(quotes.accept(owner, b, { projectId })).rejects.toMatchObject({
+      code: 'VALIDATION',
+    });
+  });
+
+  it('BUG-157: a scheduled visit cannot be left by hand; completing it moves the ticket to In progress', async () => {
+    const t = await tickets.create(asst, {
+      projectId,
+      type: 'service',
+      subject: 'Machine',
+      channel: 'phone',
+    });
+    const { id } = await visits.schedule(asst, t.id, {
+      visitDate: '2099-12-31',
+      slot: 'morning',
+      engineerId: site.userId,
+    });
+    await expect(tickets.update(asst, t.id, { status: 'awaiting_client' })).rejects.toMatchObject({
+      code: 'CONFLICT',
+    });
+    await visits.complete(site, id, {
+      beforeIds: [await photo(site)],
+      afterIds: [await photo(site)],
+      workDone: 'Done',
+    });
+    expect((await tickets.get(owner, t.id)).status).toBe('in_progress');
+  });
+
+  it('BUG-158: caller details are not copied into the audit log', async () => {
+    const t = await tickets.create(asst, {
+      projectId,
+      type: 'snag',
+      subject: 'Private',
+      channel: 'phone',
+      callerName: 'Mrs Lakshmi',
+      callerPhone: '9840099999',
+    });
+    const { rows } = await superPool.query<{ after: string }>(
+      `SELECT after::text FROM audit_log WHERE entity = 'ticket' AND entity_id = $1`,
+      [t.id],
+    );
+    expect(rows[0]?.after).not.toContain('9840099999');
+    expect(rows[0]?.after).not.toContain('Lakshmi');
+  });
+
+  it('BUG-159: two handlers with the same name get their own workload rows', async () => {
+    const twinA = actorFor(f, await makeUser(f.companyId, 'asstmgr', 'Twin'), 'asstmgr');
+    const twinB = actorFor(f, await makeUser(f.companyId, 'asstmgr', 'Twin'), 'asstmgr');
+    for (const tw of [twinA, twinB])
+      await tickets.create(tw, {
+        projectId,
+        type: 'snag',
+        subject: 'Twin',
+        channel: 'phone',
+        assigneeId: tw.userId,
+      });
+    const d = await dashboard.get(owner);
+    expect(d.workload.filter((w) => w.name === 'Twin')).toHaveLength(2);
+  });
+
+  it('BUG-160: both clocks notify, and reading notifications sweeps them', async () => {
+    const t = await tickets.create(asst, {
+      projectId,
+      type: 'snag',
+      subject: 'Both late',
+      priority: 'urgent',
+      channel: 'phone',
+      assigneeId: asst.userId,
+    });
+    await superPool.query(
+      `UPDATE ticket SET created_at = now() - interval '5 hours' WHERE id = $1`,
+      [t.id],
+    );
+    const n = await new NotificationsService(appPool).mine(asst);
+    const titles = n.items.filter((i) => i.link === `/tickets/${t.id}`).map((i) => i.body ?? '');
+    expect(titles.some((b) => b.startsWith('No response'))).toBe(true);
+    expect(titles.some((b) => b.startsWith('Not resolved'))).toBe(true);
+    await new NotificationsService(appPool).markRead(asst);
+    expect((await new NotificationsService(appPool).mine(asst)).unread).toBe(0);
+  });
+
+  it('BUG-161: a scoped handler sees visits on their projects, filtered before the limit', async () => {
+    const scoped = actorFor(f, asst.userId, 'asstmgr', [projectId]);
+    const list = await visits.list(scoped);
+    expect(list.length).toBeGreaterThan(0);
+    expect(list.every((v) => v.projectCode !== '')).toBe(true);
+  });
+
+  it('BUG-162: events written together keep their order', async () => {
+    const t = await tickets.create(asst, {
+      projectId,
+      type: 'service',
+      subject: 'Order',
+      channel: 'phone',
+    });
+    const { id } = await visits.schedule(asst, t.id, {
+      visitDate: '2099-12-31',
+      slot: 'morning',
+      engineerId: site.userId,
+    });
+    await visits.complete(site, id, {
+      beforeIds: [await photo(site)],
+      afterIds: [await photo(site)],
+      workDone: 'Done',
+    });
+    const ev = (await tickets.get(owner, t.id)).events.map((e) => e.body);
+    expect(ev.findIndex((b) => b.startsWith('Visit completed'))).toBeLessThan(
+      ev.findIndex((b) => b.startsWith('Work done')),
+    );
   });
 });

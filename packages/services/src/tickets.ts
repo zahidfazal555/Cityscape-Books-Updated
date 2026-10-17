@@ -281,6 +281,7 @@ export class TicketsService {
   async counts(actor: Actor): Promise<Record<TicketView | 'visits' | 'awaiting', number>> {
     authorize(actor, 'tickets', 'view');
     return withTenant(this.pool, ctx(actor), async (c) => {
+      await notifySla(c);
       const cols = TICKET_VIEWS.map((v) => `count(*) FILTER (WHERE ${VIEW_SQL[v]})::int AS ${v}`);
       const { rows } = await c.query<Record<string, number>>(
         `SELECT ${cols.join(', ')},
@@ -326,11 +327,14 @@ export class TicketsService {
       const id = rows[0]?.id;
       if (!id) throw new DomainError('CONFLICT', 'The ticket was not saved.');
       await systemEvent(c, id, `Ticket logged (${COVERAGE_LABEL[coverage]})`);
+      // BUG-158 (§9): caller details are anonymised after 3 years; the append-only audit log
+      // must not keep a copy of them.
+      const { callerName, callerPhone, ...rest } = data;
       await writeAudit(c, {
         action: 'create',
         entity: 'ticket',
         entityId: id,
-        after: { ...data, coverage },
+        after: { ...rest, coverage, caller: Boolean(callerName || callerPhone) },
       });
       return { id, number };
     });
@@ -349,7 +353,7 @@ export class TicketsService {
       }>(
         `SELECT e.id, e.kind, e.body, u.name AS author_name, e.created_at
            FROM ticket_event e LEFT JOIN app_user u ON u.id = e.author_id
-          WHERE e.ticket_id = $1 ORDER BY e.created_at, e.id`,
+          WHERE e.ticket_id = $1 ORDER BY e.seq`,
         [id],
       );
       const events = rows.map((e) => ({
@@ -542,22 +546,27 @@ async function moveStatus(c: pg.PoolClient, t: TicketDetail, to: TicketStatus): 
 }
 
 /**
- * Notifications for breached tickets and tickets due soon (README §18), once per ticket, target
- * and state: to the assignee, or to the Owner when unassigned. Idempotent by key.
+ * Notifications for breached tickets and tickets due soon (README §18), once per ticket, clock and
+ * state (BUG-160: the response and resolution clocks each notify): to the assignee, or to the
+ * Owner when unassigned. Idempotent by key; run on every notification read and queue load.
  */
-async function notifySla(c: pg.PoolClient): Promise<void> {
+export async function notifySla(c: pg.PoolClient): Promise<void> {
   await c.query(
-    `WITH due AS (
-       SELECT t.id, t.number, t.subject, coalesce(t.assignee_id, (SELECT id FROM app_user WHERE role = 'owner' LIMIT 1)) AS to_user,
-              CASE WHEN t.first_response_at IS NULL AND t.resp_due < now() THEN 'resp:breach'
-                   WHEN t.resolve_due < now() THEN 'resolve:breach'
-                   WHEN t.first_response_at IS NULL AND t.resp_due - now() <= (t.resp_due - t.created_at) / 4 THEN 'resp:soon'
-                   WHEN t.resolve_due - now() <= (t.resolve_due - t.created_at) / 4 THEN 'resolve:soon' END AS state
-         FROM ticket t WHERE ${OPEN})
+    `WITH clock AS (
+       SELECT t.id, t.number, t.subject,
+              coalesce(t.assignee_id, (SELECT id FROM app_user WHERE role = 'owner' LIMIT 1)) AS to_user,
+              k.name, k.due, k.due - t.created_at AS target
+         FROM ticket t
+         CROSS JOIN LATERAL (VALUES ('resp', t.resp_due, t.first_response_at IS NULL AND t.resolved_at IS NULL),
+                                    ('resolve', t.resolve_due, t.resolved_at IS NULL)) AS k(name, due, running)
+        WHERE ${OPEN} AND k.running),
+     due AS (
+       SELECT *, CASE WHEN due < now() THEN 'breach' WHEN due - now() <= target / 4 THEN 'soon' END AS state
+         FROM clock)
      INSERT INTO notification (company_id, user_id, key, type, title, body, link)
-     SELECT app_company_id(), d.to_user, 'sla:' || d.id || ':' || d.state, 'sla',
-            CASE WHEN d.state LIKE '%breach' THEN d.number || ' is overdue' ELSE d.number || ' is due soon' END,
-            CASE WHEN d.state LIKE 'resp%' THEN 'No response yet: ' ELSE 'Not resolved yet: ' END || d.subject,
+     SELECT app_company_id(), d.to_user, 'sla:' || d.id || ':' || d.name || ':' || d.state, 'sla',
+            d.number || CASE WHEN d.state = 'breach' THEN ' is overdue' ELSE ' is due soon' END,
+            CASE WHEN d.name = 'resp' THEN 'No response yet: ' ELSE 'Not resolved yet: ' END || d.subject,
             '/tickets/' || d.id
        FROM due d WHERE d.state IS NOT NULL AND d.to_user IS NOT NULL
      ON CONFLICT (user_id, key) DO NOTHING`,

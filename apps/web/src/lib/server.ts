@@ -5,6 +5,7 @@ import pg from 'pg';
 import {
   ApprovalsService,
   KnowledgeBaseService,
+  NotificationsService,
   SupportDashboardService,
   TicketBillingService,
   TicketsService,
@@ -73,6 +74,7 @@ export interface Services {
   kb: KnowledgeBaseService;
   ticketBilling: TicketBillingService;
   supportDashboard: SupportDashboardService;
+  notifications: NotificationsService;
 }
 
 const g = globalThis as unknown as { __csd?: Services };
@@ -134,6 +136,7 @@ export function services(): Services {
     kb: new KnowledgeBaseService(pool),
     ticketBilling: new TicketBillingService(pool),
     supportDashboard: new SupportDashboardService(pool),
+    notifications: new NotificationsService(pool),
   };
   return g.__csd;
 }

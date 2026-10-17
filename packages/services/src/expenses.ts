@@ -462,7 +462,8 @@ async function approveTx(c: pg.PoolClient, actor: Actor, id: string): Promise<vo
   const company = await companyRow(c);
   assertNotLocked(e.txn_date, company.lock_date, 'txnDate');
   // The project may have closed, or the photo rule changed, since it was entered.
-  await assertLiveProject(c, e.project_id);
+  // BUG-154: service visits happen after handover, on Completed projects.
+  await assertLiveProject(c, e.project_id, e.source === 'visit');
   if (needsPhoto(e)) await assertPhoto(c, e.attachment_id);
   const journalId = await postExpense(c, id, {
     projectId: e.project_id,

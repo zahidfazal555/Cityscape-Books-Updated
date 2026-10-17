@@ -74,6 +74,8 @@ CREATE TABLE ticket_event (
   body       text NOT NULL CHECK (length(trim(body)) > 0),
   author_id  uuid,
   created_at timestamptz NOT NULL DEFAULT now(),
+  -- Events written in one transaction share now(); the thread is ordered by this (BUG-162).
+  seq        bigint GENERATED ALWAYS AS IDENTITY,
   FOREIGN KEY (company_id, ticket_id) REFERENCES ticket (company_id, id)
 );
 CREATE INDEX ticket_event_ticket ON ticket_event (ticket_id, created_at);

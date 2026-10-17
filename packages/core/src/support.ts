@@ -129,8 +129,8 @@ const MOVES: Readonly<Record<TicketStatus, readonly TicketStatus[]>> = {
   open: ['in_progress', 'awaiting_client', 'resolved', 'closed'],
   in_progress: ['open', 'awaiting_client', 'resolved', 'closed'],
   awaiting_client: ['open', 'in_progress', 'resolved', 'closed'],
-  // Left only by completing or cancelling the visit.
-  visit_scheduled: ['in_progress', 'awaiting_client'],
+  // Left only by completing or cancelling the visit (BUG-157).
+  visit_scheduled: [],
   resolved: ['closed', 'open', 'in_progress'],
   closed: ['open', 'in_progress'],
 };
