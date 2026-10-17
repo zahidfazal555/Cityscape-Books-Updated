@@ -444,6 +444,9 @@ export class LabourService {
     await withTenant(this.pool, ctx(actor), async (c) => {
       const job = await jobById(c, actor, id, true);
       authorize(actor, 'payroll', 'edit', job.projectId);
+      // BUG-144 (H2): the TDS rate changes the cash paid; only the Owner changes it.
+      if (data.tdsRate !== undefined && data.tdsRate !== job.tdsRate && requiresApproval(actor))
+        throw new DomainError('FORBIDDEN', 'Only the owner changes the TDS rate.');
       await c.query(
         `UPDATE contract_job SET work = coalesce($2, work), progress = coalesce($3, progress),
                 tds_rate = coalesce($4, tds_rate), is_closed = coalesce($5, is_closed),
@@ -654,6 +657,15 @@ export class LabourService {
       await payrollLock(c);
       const e = await lockEntry(c, actor, TABLE[kind], id);
       const pay = await paymentById(c, kind, id);
+      // BUG-142: reversing wages on a project the worker has left would strand them there.
+      if (kind === 'wage' && e.status === 'approved') {
+        const w = await workerById(c, actor, pay.targetId).catch(() => null);
+        if (w && w.projectId !== pay.projectId)
+          throw new DomainError(
+            'CONFLICT',
+            `${pay.payee} has moved to ${w.projectCode}; move them back to reverse wages on ${pay.projectCode}.`,
+          );
+      }
       await removeEntry(
         c,
         actor,

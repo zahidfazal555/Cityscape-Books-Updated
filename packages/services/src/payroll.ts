@@ -73,7 +73,9 @@ const employeeUpdate = z.object({
   recoveryInstalment: paise.optional(),
   isActive: z.boolean().optional(),
 });
-const rateSchema = z.object({ value: paise });
+const rateSchema = z.object({
+  value: z.number().int('Amounts must be in paise.').positive('Enter a rate above zero.'),
+});
 const advanceSchema = z
   .object({
     employeeId: z.string().uuid('Choose the employee.'),
@@ -154,6 +156,8 @@ export interface PayrollRun {
   rejectReason: string | null;
   submittedBy: string | null;
   submittedAt: string;
+  /** Number of payslips; `lines` is filled only by `run(id)` (an audited read). */
+  staff: number;
   lines: PayrollLine[];
 }
 
@@ -255,7 +259,10 @@ export class PayrollService {
          ORDER BY e.is_active DESC, e.name`,
         [kind, projectScope(actor)],
       );
-      return rows.filter((r) => canSee(actor, r)).map(toEmployee);
+      const list = rows.filter((r) => canSee(actor, r)).map(toEmployee);
+      // §9 / H4: every view of salaries is audited.
+      await auditView(c, kind === 'salaried' ? 'employee_salaries' : 'employee_wages', list.length);
+      return list;
     });
   }
 
@@ -292,6 +299,13 @@ export class PayrollService {
       await payrollLock(c);
       const e = await loadEmployee(c, actor, id, true);
       authorize(actor, 'payroll', 'edit', e.projectId ?? undefined);
+      // BUG-144 (H2): deductions change what a person is paid; only the Owner sets them.
+      const deductions = [data.monthlyTds, data.ptHalfYear, data.recoveryInstalment];
+      if (requiresApproval(actor) && deductions.some((v) => v !== undefined))
+        throw new DomainError(
+          'FORBIDDEN',
+          'Only the owner changes TDS, professional tax or recovery.',
+        );
       if (data.projectId !== undefined && data.projectId !== e.projectId)
         await assertCanMove(c, actor, e, data.projectId);
       await c.query(
@@ -524,7 +538,11 @@ export class PayrollService {
     assertPeriod(period);
     authorize(actor, 'payroll', 'view');
     assertAllProjects(actor);
-    return withTenant(this.pool, ctx(actor), (c) => linesFor(c, period));
+    return withTenant(this.pool, ctx(actor), async (c) => {
+      const lines = await linesFor(c, period);
+      await auditView(c, 'payroll_preview', lines.length, { period });
+      return lines;
+    });
   }
 
   async runs(actor: Actor): Promise<PayrollRun[]> {
@@ -534,7 +552,8 @@ export class PayrollService {
       const { rows } = await c.query<RunRow>(
         `${RUN_SELECT} ORDER BY r.period DESC, r.created_at DESC LIMIT 60`,
       );
-      return Promise.all(rows.map(async (r) => toRun(r, await payslips(c, r.id))));
+      // Totals only: payslips are read one run at a time, and that read is audited.
+      return rows.map((r) => toRun(r, []));
     });
   }
 
@@ -546,7 +565,14 @@ export class PayrollService {
       const { rows } = await c.query<RunRow>(`${RUN_SELECT} AND r.id = $1`, [id]);
       const r = rows[0];
       if (!r) throw new DomainError('NOT_FOUND', 'Payroll run not found.');
-      return toRun(r, await payslips(c, id));
+      const lines = await payslips(c, id);
+      await writeAudit(c, {
+        action: 'view',
+        entity: 'payslip',
+        entityId: id,
+        after: { period: r.period, payslips: lines.length },
+      });
+      return toRun(r, lines);
     });
   }
 
@@ -821,16 +847,19 @@ async function assertCanMove(
 
 /** A worker moves project only once their wages there are settled. */
 async function assertNoWageBalance(c: pg.PoolClient, e: Employee): Promise<void> {
-  const { rows } = await c.query<{ earned: string; paid: string }>(
+  // BUG-142: a pending payment may still be rejected, so only approved wages count as paid.
+  const { rows } = await c.query<{ earned: string; paid: string; pending: boolean }>(
     `SELECT coalesce((SELECT sum(round(rate * tenths / 10.0, 2)) FROM attendance
                        WHERE employee_id = $1 AND project_id = $2), 0)::text AS earned,
             coalesce((SELECT sum(amount) FROM wage_payment
-                       WHERE employee_id = $1 AND project_id = $2 AND status <> 'rejected'
-                         AND deleted_at IS NULL), 0)::text AS paid`,
+                       WHERE employee_id = $1 AND project_id = $2 AND status = 'approved'
+                         AND deleted_at IS NULL), 0)::text AS paid,
+            EXISTS (SELECT 1 FROM wage_payment WHERE employee_id = $1 AND status = 'pending'
+                       AND deleted_at IS NULL) AS pending`,
     [e.id, e.projectId],
   );
   const r = rows[0];
-  if (r && p(r.earned) !== p(r.paid))
+  if (r && (r.pending || p(r.earned) !== p(r.paid)))
     throw new DomainError(
       'CONFLICT',
       'Settle the wages on the current project before moving the worker.',
@@ -924,12 +953,14 @@ interface RunRow {
   reject_reason: string | null;
   submitted_by: string | null;
   created_at: Date;
+  staff: number;
 }
 
 const RUN_SELECT = `
   SELECT r.id, r.period, to_char(r.pay_date, 'YYYY-MM-DD') AS pay_date, r.mode, r.reference, r.gross::text,
          r.tds::text, r.pt::text, r.recovery::text, r.net::text, r.status, r.reject_reason,
-         u.name AS submitted_by, r.created_at
+         u.name AS submitted_by, r.created_at,
+         (SELECT count(*) FROM payslip s WHERE s.run_id = r.id)::int AS staff
     FROM payroll_run r LEFT JOIN app_user u ON u.id = r.created_by
    WHERE r.deleted_at IS NULL`;
 
@@ -944,6 +975,7 @@ const toRun = (r: RunRow, lines: PayrollLine[]): PayrollRun => ({
   rejectReason: r.reject_reason,
   submittedBy: r.submitted_by,
   submittedAt: r.created_at.toISOString(),
+  staff: r.staff,
   lines,
 });
 
@@ -951,7 +983,17 @@ export async function pendingRuns(c: pg.PoolClient): Promise<PayrollRun[]> {
   const { rows } = await c.query<RunRow>(
     `${RUN_SELECT} AND r.status = 'pending' ORDER BY r.created_at`,
   );
-  return Promise.all(rows.map(async (r) => toRun(r, await payslips(c, r.id))));
+  return rows.map((r) => toRun(r, []));
+}
+
+/** H4 / §9: a read of salary or payslip figures leaves an audit row. */
+async function auditView(
+  c: pg.PoolClient,
+  entity: string,
+  rows: number,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  await writeAudit(c, { action: 'view', entity, entityId: null, after: { rows, ...extra } });
 }
 
 async function payslips(c: pg.PoolClient, runId: string): Promise<PayrollLine[]> {
