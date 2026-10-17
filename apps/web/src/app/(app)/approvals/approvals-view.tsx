@@ -134,6 +134,7 @@ export function ApprovalsView({
                 <div>
                   {RATE_LABEL[r.field]} · {r.targetName}
                   {r.projectCode ? ` · ${r.projectCode}` : ''}
+                  {r.tdsRate !== null ? ` · TDS u/s 194C ${r.tdsRate}%` : ''}
                 </div>
                 <div className="text-xs text-subtle">
                   {r.submittedBy ?? 'Someone'} · entered {istDateTime(r.submittedAt)}

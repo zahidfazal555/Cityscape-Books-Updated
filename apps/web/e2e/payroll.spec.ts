@@ -72,6 +72,17 @@ test('payroll: a worker’s +1 and wages, an admin’s payment approved by the o
     '₹42,000',
   );
 
+  // BUG-149/150: the admin processes last month from the picker; it waits, and prints as a draft.
+  await admin.goto('/payroll');
+  await admin.getByLabel('Month').selectOption({ index: 1 });
+  await admin.getByRole('button', { name: /^Process .* payroll$/ }).click();
+  await admin.getByRole('dialog').getByText('Cash', { exact: true }).click();
+  await admin.getByRole('button', { name: 'Submit for approval' }).click();
+  const pendingRun = admin.getByRole('row').filter({ hasText: 'Waiting for owner' });
+  await pendingRun.getByRole('link', { name: 'Payslips' }).click();
+  await expect(admin.getByText('Draft · not approved · not a payslip').first()).toBeVisible();
+  await expect(admin.getByRole('button', { name: 'Print' })).toHaveCount(0);
+
   // A manager has no payroll right: no nav entry.
   const pm = await (await browser.newContext()).newPage();
   await signIn(pm, 'manager');

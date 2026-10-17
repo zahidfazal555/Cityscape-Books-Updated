@@ -18,6 +18,8 @@ export interface PayrollRights {
   full: boolean;
   owner: boolean;
   me: string;
+  /** Books lock date: posted entries on or before it cannot be reversed (BUG-151). */
+  lockDate: string | null;
 }
 
 const MONTH = new Intl.DateTimeFormat('en-IN', { month: 'long', timeZone: 'UTC' });
@@ -28,6 +30,37 @@ export const STATUS_PILL = {
   approved: <Pill tone="green">Posted</Pill>,
   rejected: <Pill tone="red">Rejected</Pill>,
 } as const;
+
+/** "₹X waiting" for a pending rate change, with Withdraw for its author or `payroll = full` (BUG-152). */
+export function PendingRate({
+  pending,
+  rights,
+}: {
+  pending: { id: string; value: number; createdBy: string | null };
+  rights: PayrollRights;
+}) {
+  const { busy, error, run } = useAction();
+  return (
+    <span className="block text-xs text-warn">
+      {rupees(pending.value)} waiting
+      {rights.full || pending.createdBy === rights.me ? (
+        <button
+          type="button"
+          className="ml-2 text-primary"
+          disabled={busy}
+          onClick={() =>
+            void run(() =>
+              apiFetch(`/api/v1/payroll/rate-changes/${pending.id}`, { method: 'DELETE' }),
+            )
+          }
+        >
+          Withdraw
+        </button>
+      ) : null}
+      {error ? <span className="block text-danger">{error}</span> : null}
+    </span>
+  );
+}
 
 /** Asks for a new figure and sends it as a rate change (H2: pending unless the Owner). */
 export function useRateChange() {
@@ -42,13 +75,14 @@ export function useRateChange() {
   return { busy, error, ask };
 }
 
-/** README §14, Monthly staff (FR-17.1). */
+/** README §14, Monthly staff (FR-17.1). `periods` are the months that can be processed (BUG-149). */
 export function StaffView({
   staff,
   preview,
   runs,
   advances,
   period,
+  periods,
   rights,
 }: {
   staff: Employee[];
@@ -56,6 +90,7 @@ export function StaffView({
   runs: PayrollRun[];
   advances: StaffAdvance[];
   period: string;
+  periods: string[];
   rights: PayrollRights;
 }) {
   const router = useRouter();
@@ -73,7 +108,22 @@ export function StaffView({
   return (
     <div className="flex flex-col gap-5">
       {rights.edit ? (
-        <div className="flex flex-wrap justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <label htmlFor="pay-period" className="text-[13px] text-muted">
+            Month
+          </label>
+          <select
+            id="pay-period"
+            className={`${selectCls} w-auto`}
+            value={period}
+            onChange={(e) => router.push(`/payroll?period=${e.target.value}`)}
+          >
+            {periods.map((p) => (
+              <option key={p} value={p}>
+                {monthName(p)} {p.slice(0, 4)}
+              </option>
+            ))}
+          </select>
           <Button variant="ghost" onClick={() => setDrawer('employee')}>
             + Add employee
           </Button>
@@ -124,11 +174,7 @@ export function StaffView({
                 </span>
                 <span className="num text-right">
                   {rupees(e.monthlyGross)}
-                  {e.pendingRate ? (
-                    <span className="block text-xs text-warn">
-                      {rupees(e.pendingRate.value)} waiting
-                    </span>
-                  ) : null}
+                  {e.pendingRate ? <PendingRate pending={e.pendingRate} rights={rights} /> : null}
                 </span>
                 <span className="num text-right">{l ? rupees(l.tds) : '—'}</span>
                 <span className="num text-right">{l ? rupees(l.pt) : '—'}</span>
@@ -227,10 +273,18 @@ export function StaffView({
   );
 }
 
-/** Pending: its author or `payroll = full`. Posted: the Owner only (reversal). */
-export function canRemove(e: { status: string }, rights: PayrollRights): boolean {
-  if (e.status === 'approved') return rights.owner;
-  return e.status === 'pending' && (rights.full || rights.edit);
+/**
+ * Pending: its author or `payroll = full` (BUG-148). Posted: the Owner only, and only in an open
+ * period, since the reversal is dated on the entry (BUG-151).
+ */
+export function canRemove(
+  e: { status: string; createdBy: string | null },
+  date: string,
+  rights: PayrollRights,
+): boolean {
+  if (e.status === 'approved')
+    return rights.owner && (rights.lockDate === null || date > rights.lockDate);
+  return e.status === 'pending' && (rights.full || (rights.edit && e.createdBy === rights.me));
 }
 
 export const removeQuestion = (status: string, noun: string) =>
@@ -273,7 +327,7 @@ function Runs({ runs, rights }: { runs: PayrollRun[]; rights: PayrollRights }) {
                 <Link href={`/payroll/runs/${r.id}`} className="text-primary">
                   Payslips
                 </Link>
-                {canRemove(r, rights) ? (
+                {canRemove(r, r.payDate, rights) ? (
                   <button
                     type="button"
                     className="text-danger"
@@ -319,7 +373,7 @@ function Advances({ advances, rights }: { advances: StaffAdvance[]; rights: Payr
             <span className="num text-right">{rupees(a.amount)}</span>
             <span title={a.rejectReason ?? undefined}>{STATUS_PILL[a.status]}</span>
             <span className="text-right text-xs">
-              {canRemove(a, rights) ? (
+              {canRemove(a, a.advDate, rights) ? (
                 <button
                   type="button"
                   className="text-danger"

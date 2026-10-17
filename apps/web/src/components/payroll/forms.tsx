@@ -75,7 +75,7 @@ export function EmployeeDrawer({
   const [projectId, setProjectId] = useState('');
   const [rate, setRate] = useState('');
   const [tds, setTds] = useState('');
-  const [pt, setPt] = useState(staff ? '1250' : '');
+  const [pt, setPt] = useState(staff && isOwner ? '1250' : '');
   const [recovery, setRecovery] = useState('');
   const [idempotencyKey] = useState(newIdempotencyKey);
   const { busy, error, run } = useAction();
@@ -92,7 +92,8 @@ export function EmployeeDrawer({
             roleTitle,
             projectId: projectId || null,
             rate: money(rate, 'rate'),
-            ...(staff
+            // BUG-147 (H2): deductions are the Owner's; others leave them for the Owner to set.
+            ...(staff && isOwner
               ? {
                   monthlyTds: money(tds, 'monthlyTds'),
                   ptHalfYear: money(pt, 'ptHalfYear'),
@@ -138,7 +139,12 @@ export function EmployeeDrawer({
             onChange={(e) => setRate(e.target.value)}
           />
         </Field>
-        {staff ? (
+        {staff && !isOwner ? (
+          <p className="text-xs text-muted">
+            The owner sets TDS, professional tax and advance recovery.
+          </p>
+        ) : null}
+        {staff && isOwner ? (
           <div className="grid grid-cols-3 gap-3">
             <Field label="TDS / month (₹)" htmlFor="e-tds">
               <Input

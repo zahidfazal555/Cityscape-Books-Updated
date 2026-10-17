@@ -13,6 +13,7 @@ import { apiFetch } from '@/lib/client';
 import { rupees } from '@/lib/format';
 import { MODE_LABEL } from '@/lib/sales';
 import {
+  PendingRate,
   STATUS_PILL,
   canRemove,
   removeQuestion,
@@ -80,9 +81,7 @@ export function LabourView({
               <span className="font-mono text-[12px]">{w.projectCode}</span>
               <span className="num text-right">
                 {w.dailyRate > 0 ? rupees(w.dailyRate) : '—'}
-                {w.pendingRate !== null ? (
-                  <span className="block text-xs text-warn">{rupees(w.pendingRate)} waiting</span>
-                ) : null}
+                {w.pendingRate ? <PendingRate pending={w.pendingRate} rights={rights} /> : null}
               </span>
               <span className="flex items-center justify-end gap-2">
                 <span className="num">{days(w.tenths)}</span>
@@ -217,7 +216,7 @@ export function Payments({
             <span className="text-muted">{MODE_LABEL[p.mode]}</span>
             <span title={p.rejectReason ?? undefined}>{STATUS_PILL[p.status]}</span>
             <span className="text-right text-xs">
-              {canRemove(p, rights) ? (
+              {canRemove(p, p.payDate, rights) ? (
                 <button
                   type="button"
                   className="text-danger"

@@ -12,7 +12,7 @@ import { useAction, type ProjectOption } from '@/components/sales/use-action';
 import { apiFetch } from '@/lib/client';
 import { rupees } from '@/lib/format';
 import { Payments } from './labour-view';
-import { useRateChange, type PayrollRights } from './staff-view';
+import { PendingRate, useRateChange, type PayrollRights } from './staff-view';
 
 /** README §14, Contractors paid per job (FR-17.3). */
 export function ContractsView({
@@ -37,12 +37,18 @@ export function ContractsView({
     router.refresh();
   };
   const setProgress = (j: ContractJob) => {
-    const raw = window.prompt('Progress (%)', String(j.progress));
-    if (raw === null) return;
+    const raw = window.prompt('Progress (%)', String(j.progress))?.trim();
+    if (!raw) return;
+    const progress = Number(raw);
+    // BUG-153: blank or non-numeric input never resets the job to 0%.
+    if (!Number.isInteger(progress) || progress < 0 || progress > 100) {
+      update.setError('Enter a whole number from 0 to 100.');
+      return;
+    }
     void update.run(() =>
       apiFetch(`/api/v1/labour/jobs/${j.id}`, {
         method: 'PATCH',
-        body: { progress: Number(raw) },
+        body: { progress },
       }),
     );
   };
@@ -87,9 +93,7 @@ export function ContractsView({
               <span className="font-mono text-[12px]">{j.projectCode}</span>
               <span className="num text-right">
                 {rupees(j.value)}
-                {j.pendingValue !== null ? (
-                  <span className="block text-xs text-warn">{rupees(j.pendingValue)} waiting</span>
-                ) : null}
+                {j.pendingValue ? <PendingRate pending={j.pendingValue} rights={rights} /> : null}
               </span>
               <span className="num text-right">
                 {rupees(j.paid)}
