@@ -61,7 +61,6 @@ describe('monthly staff and payroll runs (FR-17.1, H2, SPEC-FIXES C2)', () => {
       name: 'Interior Designer',
       roleTitle: 'Design',
       rate: 42_000_00,
-      monthlyTds: 1_800_00,
     }));
     const staff = await payroll.employees(owner, 'salaried');
     const d = staff.find((e) => e.id === designer)!;
@@ -70,6 +69,8 @@ describe('monthly staff and payroll runs (FR-17.1, H2, SPEC-FIXES C2)', () => {
     const q = await approvals.queue(owner);
     expect(q.rateChanges.map((r) => r.targetName)).toContain('Interior Designer');
     await payroll.approveRate(owner, d.pendingRate!.id);
+    // BUG-147: deductions are the Owner's to set.
+    await payroll.updateEmployee(owner, designer, { monthlyTds: 1_800_00 });
     expect(
       (await payroll.employees(owner, 'salaried')).find((e) => e.id === designer)!.monthlyGross,
     ).toBe(42_000_00);
@@ -500,5 +501,60 @@ describe('review regressions (PR 14)', () => {
     await expect(payroll.requestRate(owner, w!.id, { value: 0 })).rejects.toMatchObject({
       code: 'VALIDATION',
     });
+  });
+
+  it('BUG-147: a non-owner cannot set deductions on a new employee; a job value card shows its TDS rate', async () => {
+    await expect(
+      payroll.createEmployee(admin, {
+        kind: 'salaried',
+        name: 'Sneaky',
+        roleTitle: 'Office',
+        rate: 18_000_00,
+        recoveryInstalment: 20_000_00,
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    const { id } = await labour.createJob(admin, {
+      contractor: 'Guru',
+      work: 'Painting',
+      projectId,
+      value: 60_000_00,
+      tdsRate: 2,
+    });
+    const card = (await payroll.pendingRates(owner)).find((r) => r.targetId === id);
+    expect(card).toMatchObject({ field: 'job_value', tdsRate: 2, createdBy: admin.userId });
+  });
+
+  it('BUG-148/152: entries and pending rates carry their author; the author withdraws a pending rate', async () => {
+    const [w] = await labour.workers(owner);
+    expect(await payroll.requestRate(admin, w!.id, { value: 1_111_00 })).toEqual({
+      status: 'pending',
+    });
+    const pending = (await labour.worker(owner, w!.id)).pendingRate;
+    expect(pending).toMatchObject({ value: 1_111_00, createdBy: admin.userId });
+    await payroll.withdrawRate(admin, pending!.id);
+    expect((await labour.worker(owner, w!.id)).pendingRate).toBeNull();
+    const [pay] = await labour.payments(owner, 'wage');
+    expect(pay?.createdBy).toBeTruthy();
+    const [run] = await payroll.runs(owner);
+    expect(run?.createdBy).toBeTruthy();
+  });
+
+  it('BUG-153: a material purchase in a locked month cannot be removed', async () => {
+    const { id } = await inventory.record(owner, {
+      projectId,
+      purchaseDate: '2026-10-01',
+      item: 'Locked item',
+      category: 'Other',
+      unit: 'Nos',
+      qtyMilli: 1000,
+      amount: 100_00,
+      vendorName: 'V',
+    });
+    await setLock(f.companyId, '2026-10-05');
+    try {
+      await expect(inventory.remove(owner, id)).rejects.toMatchObject({ code: 'PERIOD_LOCKED' });
+    } finally {
+      await setLock(f.companyId, null);
+    }
   });
 });

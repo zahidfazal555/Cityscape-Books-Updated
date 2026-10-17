@@ -18,15 +18,17 @@ export default async function PayslipsPage({ params }: { params: Promise<{ id: s
     .catch(() => null);
   if (!run) return <EmptyState>Payroll run not found.</EmptyState>;
   const month = MONTH.format(new Date(`${run.period}-01T00:00:00Z`));
+  const approved = run.status === 'approved';
   return (
-    <div className="flex flex-col gap-4">
+    // A block container: forced page breaks are unreliable inside flex layouts when printing.
+    <div className="space-y-4">
       <div data-noprint className="flex items-center justify-between">
         <Link href="/payroll" className="text-[13px] text-primary">
           ← Payroll
         </Link>
-        <PrintButton />
+        {approved ? <PrintButton /> : null}
       </div>
-      {run.status === 'approved' ? null : (
+      {approved ? null : (
         <p className="rounded-md border border-warn-line bg-warn-bg px-3 py-2 text-[13px] text-warn">
           This run is {run.status === 'pending' ? 'waiting for the owner' : 'rejected'}: these are
           drafts, not payslips.
@@ -35,15 +37,21 @@ export default async function PayslipsPage({ params }: { params: Promise<{ id: s
       {run.lines.map((l) => (
         <article
           key={l.employeeId}
-          className="mx-auto w-full max-w-[720px] break-after-page rounded-lg border border-line bg-white p-8 text-[13px] print:border-0"
+          className="mx-auto w-full max-w-[720px] break-after-page rounded-lg border border-line bg-white p-8 text-[13px] last:break-after-auto print:border-0"
         >
+          {approved ? null : (
+            // BUG-150: every page of an unapproved run says so, not only the first.
+            <p className="mb-4 rounded border border-warn-line bg-warn-bg px-3 py-1.5 text-center text-xs font-semibold uppercase tracking-wide text-warn">
+              Draft · not approved · not a payslip
+            </p>
+          )}
           <header className="mb-6 flex items-start justify-between border-b border-line pb-4">
             <div>
               <div className="text-[18px] font-semibold">{company.name}</div>
               <div className="text-muted">Payslip · {month}</div>
             </div>
             <div className="text-right text-muted">
-              Paid {formatDate(run.payDate)} · {MODE_LABEL[run.mode]}
+              {approved ? 'Paid' : 'Pay date'} {formatDate(run.payDate)} · {MODE_LABEL[run.mode]}
             </div>
           </header>
           <div className="mb-5">

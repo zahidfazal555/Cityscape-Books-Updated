@@ -225,6 +225,8 @@ export class InventoryService {
       if (!r || !can(actor, 'inventory', 'view', r.project_id))
         throw new DomainError('NOT_FOUND', 'Purchase not found.');
       if (r.created_by !== actor.userId) authorize(actor, 'inventory', 'full', r.project_id);
+      // BUG-153: a purchase in a locked month stays (the trigger refuses it too).
+      assertNotLocked(r.purchase_date, (await companyRow(c)).lock_date, 'purchaseDate');
       await c.query(
         `UPDATE material_purchase SET deleted_at = now(), deleted_by = app_user_id() WHERE id = $1`,
         [id],
