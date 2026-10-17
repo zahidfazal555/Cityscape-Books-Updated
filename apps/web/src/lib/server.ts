@@ -4,6 +4,9 @@ import path from 'node:path';
 import pg from 'pg';
 import {
   ApprovalsService,
+  InventoryService,
+  LabourService,
+  PayrollService,
   AttachmentsService,
   AuditService,
   BankingService,
@@ -55,6 +58,9 @@ export interface Services {
   outstanding: OutstandingService;
   gst: GstService;
   reports: ReportsService;
+  payroll: PayrollService;
+  labour: LabourService;
+  inventory: InventoryService;
 }
 
 const g = globalThis as unknown as { __csd?: Services };
@@ -107,6 +113,9 @@ export function services(): Services {
     gst: new GstService(pool),
     reports: new ReportsService(pool),
     receipts: new ReceiptsService(pool),
+    payroll: new PayrollService(pool),
+    labour: new LabourService(pool),
+    inventory: new InventoryService(pool),
   };
   return g.__csd;
 }

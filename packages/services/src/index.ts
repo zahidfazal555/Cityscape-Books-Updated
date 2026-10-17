@@ -26,3 +26,7 @@ export * from './banking.js';
 export * from './outstanding.js';
 export * from './gst.js';
 export * from './reports.js';
+export * from './money-entries.js';
+export * from './payroll.js';
+export * from './labour.js';
+export * from './inventory.js';
