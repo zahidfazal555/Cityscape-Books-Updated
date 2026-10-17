@@ -67,10 +67,12 @@ test('UAT 8: a scoped Site Engineer only reaches their own project, in the UI an
   expect(projects.map((p) => p.code)).toEqual(['CSD-PRJ-0001']);
   const other = await page.request.get('/api/v1/projects/00000000-0000-4000-8000-000000000000');
   expect(other.status()).toBe(404);
-  // Site Engineers have no dashboard right: the page says so instead of showing data.
-  await expect(page.getByText('Your role has no dashboard')).toBeVisible();
-  const nav = page.getByRole('navigation', { name: 'Main' });
-  await expect(nav).not.toContainText('Tax invoices');
+  // README §17: Site Engineers land on the mobile home, which lists only their own site.
+  await expect(page).toHaveURL(/\/site$/);
+  await expect(page.getByText('CSD-PRJ-0001')).toBeVisible();
+  await expect(page.getByText('CSD-PRJ-0002')).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'Main' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: '+ Add site expense' })).toBeVisible();
 });
 
 test('after sign-in, a crafted next= cannot send the user to another site', async ({ page }) => {

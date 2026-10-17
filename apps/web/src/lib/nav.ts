@@ -36,10 +36,10 @@ const GROUPS: NavGroup[] = [
   {
     label: 'Purchases',
     items: [
-      { label: 'Purchase orders', href: '/purchase-orders', module: 'pos', ready: false },
-      { label: 'Purchase bills', href: '/bills', module: 'bills', ready: false },
-      { label: 'Expenses', href: '/expenses', module: 'expenses', ready: false },
-      { label: 'Approvals', href: '/approvals', module: 'approvals', ready: false },
+      { label: 'Purchase orders', href: '/purchase-orders', module: 'pos', ready: true },
+      { label: 'Purchase bills', href: '/bills', module: 'bills', ready: true },
+      { label: 'Expenses', href: '/expenses', module: 'expenses', ready: true },
+      { label: 'Approvals', href: '/approvals', module: 'approvals', ready: true },
     ],
   },
   {

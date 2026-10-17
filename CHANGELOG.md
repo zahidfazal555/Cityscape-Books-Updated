@@ -13,6 +13,9 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
   TDS; every non-owner payment waits for the Owner's approval.
 - Expenses with required bill photos (type-sniffed, EXIF/GPS stripped, audited views), the Owner's
   approval queue (expenses, payments, discounts) and audited expense CSV export.
+- Screens for purchase orders (with convert to bill), purchase bills and payments, expenses (filters,
+  bill-photo viewer, audited CSV), the Owner's approval cards, and the site engineer's phone layout
+  with camera capture.
 
 ### Changed
 - H2 approvals are keyed to the Owner role: granting `approvals = full` to another user no longer
