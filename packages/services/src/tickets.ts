@@ -76,6 +76,7 @@ export interface TicketSummary {
   projectId: string;
   projectCode: string;
   projectName: string;
+  clientId: string;
   clientName: string;
   type: TicketType;
   subject: string;
@@ -123,6 +124,7 @@ interface Row {
   project_id: string;
   project_code: string;
   project_name: string;
+  client_id: string;
   client_name: string;
   type: TicketType;
   subject: string;
@@ -159,7 +161,7 @@ const BREACHED = `coalesce(
 const OPEN = `t.status NOT IN ('resolved', 'closed')`;
 
 const SELECT = `
-  SELECT t.id, t.number, t.project_id, p.code AS project_code, p.name AS project_name, c.name AS client_name,
+  SELECT t.id, t.number, t.project_id, p.code AS project_code, p.name AS project_name, c.id AS client_id, c.name AS client_name,
          t.type, t.subject, t.priority, t.status, t.channel, t.coverage, t.chargeable, t.assignee_id,
          u.name AS assignee_name, t.created_at, t.resp_due, t.resolve_due, t.first_response_at, t.resolved_at,
          t.closed_at, (${OPEN} AND ${BREACHED}) AS breached, t.description, t.caller_name, t.caller_phone,
@@ -188,6 +190,7 @@ const toSummary = (r: Row): TicketSummary => ({
   projectId: r.project_id,
   projectCode: r.project_code,
   projectName: r.project_name,
+  clientId: r.client_id,
   clientName: r.client_name,
   type: r.type,
   subject: r.subject,
@@ -425,6 +428,17 @@ export class TicketsService {
         [id, data.rating, data.comment ?? null],
       );
       await systemEvent(c, id, `Customer rating ${data.rating}/5 recorded`);
+    });
+  }
+
+  /** Active site engineers, for scheduling visits (FR-19.9). */
+  async engineers(actor: Actor): Promise<{ id: string; name: string }[]> {
+    authorize(actor, 'tickets', 'edit');
+    return withTenant(this.pool, ctx(actor), async (c) => {
+      const { rows } = await c.query<{ id: string; name: string }>(
+        `SELECT id, name FROM app_user WHERE is_active AND role = 'site' ORDER BY name`,
+      );
+      return rows;
     });
   }
 

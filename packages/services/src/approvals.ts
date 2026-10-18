@@ -46,11 +46,10 @@ export class ApprovalsService {
     assertApprover(actor);
     const expenses = await this.expenses.pending(actor);
     const payments = await this.payments.pending(actor);
-    const drafts = await this.quotes.list(actor, { status: 'draft' });
     return {
       expenses,
       payments,
-      discounts: drafts.filter((q) => q.discountPct > 0 && !q.discountApproved),
+      discounts: await this.quotes.pendingDiscounts(actor),
       payroll: {
         ...(await this.companyWide(actor)),
         payments: await this.labour.pendingPayments(actor),

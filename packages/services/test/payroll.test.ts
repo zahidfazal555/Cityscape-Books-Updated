@@ -558,3 +558,31 @@ describe('review regressions (PR 14)', () => {
     }
   });
 });
+
+describe('final review regressions (payroll)', () => {
+  it('BUG-190: approving a rate change, and replacing one, each audit the request itself', async () => {
+    const id = (
+      await payroll.createEmployee(admin, {
+        kind: 'salaried',
+        name: 'Site Supervisor',
+        roleTitle: 'Supervision',
+        rate: 30_000_00,
+      })
+    ).id;
+    const first = (await payroll.employees(owner, 'salaried')).find((e) => e.id === id)!;
+    await payroll.approveRate(owner, first.pendingRate!.id);
+    await payroll.requestRate(admin, id, { value: 32_000_00 });
+    const second = (await payroll.employees(owner, 'salaried')).find((e) => e.id === id)!;
+    await payroll.requestRate(owner, id, { value: 31_000_00 });
+    const { rows } = await superPool.query<{ entity_id: string; action: string }>(
+      `SELECT entity_id, action FROM audit_log WHERE entity = 'rate_change' AND entity_id = ANY($1)`,
+      [[first.pendingRate!.id, second.pendingRate!.id]],
+    );
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { entity_id: first.pendingRate!.id, action: 'approve' },
+        { entity_id: second.pendingRate!.id, action: 'reject' },
+      ]),
+    );
+  });
+});

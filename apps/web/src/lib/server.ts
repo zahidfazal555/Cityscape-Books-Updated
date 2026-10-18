@@ -33,6 +33,8 @@ import {
   QuotationsService,
   VendorPaymentsService,
   MemoryMailer,
+  SmtpMailer,
+  type Mailer,
   ProjectsService,
   ReceiptsService,
   SettingsService,
@@ -43,7 +45,7 @@ import { log } from './log';
 
 export interface Services {
   pool: pg.Pool;
-  mailer: MemoryMailer;
+  mailer: Mailer;
   auth: AuthService;
   users: UsersService;
   settings: SettingsService;
@@ -91,13 +93,22 @@ export function services(): Services {
     statement_timeout: 15_000,
   });
   pool.on('error', (error) => log('error', 'pg pool error', { error }));
-  const mailer = new MemoryMailer();
+  const mailer =
+    e.MAIL_MODE === 'smtp' && e.SMTP_URL && e.MAIL_FROM
+      ? new SmtpMailer(e.SMTP_URL, e.MAIL_FROM)
+      : new MemoryMailer();
   const auth = new AuthService({
     pool,
     config: { jwtSecret: Buffer.from(e.JWT_SECRET, 'base64'), appUrl: e.APP_URL },
     breach: new HibpBreachChecker(),
     mailer,
-    onMailError: (error, subject) => log('error', 'mail failed', { error, subject }),
+    // Only the error code: SMTP replies can echo the recipient's address (BUG-181).
+    onMailError: (error, subject) =>
+      log('error', 'mail failed', {
+        code: (error as { code?: string }).code ?? 'unknown',
+        responseCode: (error as { responseCode?: number }).responseCode,
+        subject,
+      }),
   });
   g.__csd = {
     pool,
