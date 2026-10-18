@@ -30,7 +30,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
+      # Third-party action: pinned to a commit (BUG-188).
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -75,3 +76,12 @@ jobs:
           echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
           /tmp/gitleaks git --redact --no-banner --exit-code 1 .
+
+  image:
+    # The production image must keep building (docs/GO-LIVE.md); it is not pushed from CI.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build the production image
+        run: docker build -t cityscape-books:ci .

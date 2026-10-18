@@ -276,6 +276,8 @@ export class ProformasService {
       const pf = await this.load(c, actor, id, true);
       authorize(actor, 'proformas', 'edit', pf.projectId);
       if (pf.status !== 'draft') throw new DomainError('CONFLICT', 'Only a draft can be sent.');
+      // FR-3.3.1: nothing dated in a locked period changes, status included (BUG-193).
+      assertNotLocked(pf.pfDate, (await companyRow(c)).lock_date, 'pfDate');
       await c.query(
         `UPDATE proforma SET status = 'sent', version = version + 1, updated_by = app_user_id() WHERE id = $1`,
         [id],
@@ -292,6 +294,7 @@ export class ProformasService {
       const pf = await this.load(c, actor, id, true);
       authorize(actor, 'proformas', 'full', pf.projectId);
       assertChangeable(pf, 'cancelled');
+      assertNotLocked(pf.pfDate, (await companyRow(c)).lock_date, 'pfDate');
       await c.query(
         `UPDATE proforma SET status = 'cancelled', version = version + 1, updated_by = app_user_id() WHERE id = $1`,
         [id],
@@ -630,6 +633,12 @@ async function applyAdvances(
   await c.query(
     `UPDATE receipt_allocation SET invoice_id = $2, applied_at = $3 WHERE id = ANY($1::uuid[])`,
     [rows.map((r) => r.id), inv.id, invoiceDate],
+  );
+  // Dated history for GST Table 11B (BUG-120): past months never depend on today's row state.
+  await c.query(
+    `INSERT INTO advance_event (company_id, allocation_id, kind, event_date, invoice_id)
+     SELECT app_company_id(), id, 'applied', $2, $3 FROM unnest($1::uuid[]) AS id`,
+    [rows.map((r) => r.id), invoiceDate, inv.id],
   );
   const journalId = await postJournal(c, {
     txnDate: invoiceDate,

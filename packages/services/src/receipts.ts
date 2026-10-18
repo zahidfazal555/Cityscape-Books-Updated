@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  ACCOUNT_FOR_MODE,
   DomainError,
   assertId,
   assertNotLocked,
@@ -21,14 +22,6 @@ import { companyRow, isoDate, parse, tenantOf as ctx, type CompanyRow } from './
 
 export const RECEIPT_MODES = ['bank', 'upi', 'cash', 'cheque'] as const;
 export type ReceiptMode = (typeof RECEIPT_MODES)[number];
-
-/** Where the money lands (chart of accounts in 0001). Cheques clear into the bank account. */
-const ACCOUNT_FOR_MODE: Record<ReceiptMode, '1000' | '1010' | '1020'> = {
-  cash: '1000',
-  bank: '1010',
-  cheque: '1010',
-  upi: '1020',
-};
 
 const receiptSchema = z
   .object({

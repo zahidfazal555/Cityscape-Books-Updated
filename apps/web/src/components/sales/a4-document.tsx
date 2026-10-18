@@ -41,6 +41,7 @@ export function A4Document({
   discountPct,
   interState,
   showBank = true,
+  partyLabel = 'Bill to',
   watermark,
   footer,
 }: {
@@ -54,6 +55,8 @@ export function A4Document({
   discountPct?: number;
   interState: boolean;
   showBank?: boolean;
+  /** "Bill to" on sales documents; "Vendor" on a purchase order. */
+  partyLabel?: string;
   /** e.g. "DRAFT · not valid": printed too, so a draft can't pass for the final document. */
   watermark?: string | undefined;
   footer?: ReactNode;
@@ -98,7 +101,7 @@ export function A4Document({
       <section className="grid grid-cols-1 gap-4 border-b border-line py-4 sm:grid-cols-2">
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-[.05em] text-muted">
-            Bill to
+            {partyLabel}
           </div>
           <div className="font-medium">{billTo.name}</div>
           {billTo.address ? (

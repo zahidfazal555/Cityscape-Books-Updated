@@ -55,10 +55,7 @@ export function api<P = Record<string, never>>(
 ): RouteHandler<P> {
   return tag('authenticated', (req, route) =>
     run(req, route, async (ctx) => {
-      const token = req.cookies.get(COOKIE.access)?.value ?? bearer(req);
-      if (!token) throw new DomainError('UNAUTHENTICATED', 'Please sign in.');
-      const { actor } = await services().auth.authenticate(token);
-      limits.api.take(actor.userId);
+      const actor = await authenticated(req);
       const authed = { ...ctx, actor };
       return req.method === 'POST' ? idempotent(req, authed, fn) : fn(authed);
     }),
@@ -102,6 +99,45 @@ async function idempotent<P>(
   }
 }
 
+/** Largest file upload (bill photos, Tech Spec §6): 10 MB plus a little multipart-free slack. */
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024 + 1;
+
+/**
+ * An authenticated file upload: the raw request body (not JSON) up to MAX_UPLOAD_BYTES, with the
+ * same session, origin and rate checks as api(). The service sniffs and cleans the bytes.
+ */
+export function apiUpload(
+  fn: (ctx: AuthedContext<Record<string, never>> & { file: Buffer }) => Promise<unknown>,
+): RouteHandler<Record<string, never>> {
+  return tag('authenticated', (req, route) =>
+    run(
+      req,
+      route,
+      async (ctx) => {
+        const actor = await authenticated(req);
+        limits.upload.take(actor.userId);
+        const declared = Number(req.headers.get('content-length') ?? '0');
+        if (declared > MAX_UPLOAD_BYTES)
+          throw new DomainError('TOO_LARGE', 'The file is larger than 10 MB.');
+        const file = await readCapped(req.body, MAX_UPLOAD_BYTES);
+        return fn({ ...ctx, actor, file });
+      },
+      'raw',
+    ),
+  );
+}
+
+/** The session's actor (verified on the server), rate-limited per user. */
+async function authenticated(req: NextRequest): Promise<Actor> {
+  const token = req.cookies.get(COOKIE.access)?.value ?? bearer(req);
+  if (!token) throw new DomainError('UNAUTHENTICATED', 'Please sign in.');
+  // The notification poll marks itself: it must not count as activity (BUG-163).
+  const background = req.headers.get('x-csd-background') === '1';
+  const { actor } = await services().auth.authenticate(token, { background });
+  limits.api.take(actor.userId);
+  return actor;
+}
+
 /** Health probes: no session, no body, no data beyond up/down. */
 export function probe(fn: () => Promise<Response>): RouteHandler<Record<string, never>> {
   return tag('probe', () => fn());
@@ -111,11 +147,12 @@ async function run<P>(
   req: NextRequest,
   route: { params: Promise<P> },
   fn: (ctx: RequestContext<P>) => Promise<unknown>,
+  bodyKind: 'json' | 'raw' = 'json',
 ): Promise<Response> {
   const requestId = randomUUID();
   try {
     if (MUTATING.has(req.method)) assertSameOrigin(req);
-    const body = MUTATING.has(req.method) ? await readJson(req) : undefined;
+    const body = MUTATING.has(req.method) && bodyKind === 'json' ? await readJson(req) : undefined;
     const result = await fn({ req, params: await route.params, client: clientInfo(req), body });
     const res =
       result instanceof Response
@@ -177,7 +214,10 @@ export async function readJson(req: Request): Promise<unknown> {
 }
 
 /** Reads a body stream, stopping (and cancelling it) as soon as it passes MAX_BODY_BYTES. */
-async function readCapped(body: ReadableStream<Uint8Array> | null): Promise<Buffer> {
+async function readCapped(
+  body: ReadableStream<Uint8Array> | null,
+  max = MAX_BODY_BYTES,
+): Promise<Buffer> {
   if (!body) return Buffer.alloc(0);
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
@@ -186,7 +226,7 @@ async function readCapped(body: ReadableStream<Uint8Array> | null): Promise<Buff
     const { done, value } = await reader.read();
     if (done) return Buffer.concat(chunks);
     size += value.byteLength;
-    if (size > MAX_BODY_BYTES) {
+    if (size > max) {
       await reader.cancel().catch(() => undefined);
       throw new DomainError('TOO_LARGE', 'Request is too large.');
     }
@@ -216,6 +256,27 @@ export function trustedIp(forwardedFor: string | null, trusted: number): string 
     .filter(Boolean);
   if (trusted === 0 || hops.length < trusted) return null;
   return parseIp(hops[hops.length - trusted] ?? '');
+}
+
+/**
+ * The per-IP rate-limit key. An IPv6 client usually controls a whole /64, so IPv6 addresses are
+ * keyed by that prefix (BUG-185); IPv4-mapped IPv6 counts as the IPv4 address.
+ */
+export function ipKey(ip: string | null): string {
+  if (!ip) return 'ip:unknown';
+  if (isIP(ip) !== 6) return `ip:${ip}`;
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+  if (mapped?.[1]) return `ip:${mapped[1]}`;
+  const [head = '', tail = ''] = ip.toLowerCase().split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const groups = ip.includes('::')
+    ? [...left, ...Array<string>(8 - left.length - right.length).fill('0'), ...right]
+    : left;
+  return `ip6:${groups
+    .slice(0, 4)
+    .map((g) => g.replace(/^0+(?=.)/, ''))
+    .join(':')}::/64`;
 }
 
 export function clientInfo(req: NextRequest): ClientInfo {

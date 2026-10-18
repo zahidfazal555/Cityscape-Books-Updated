@@ -6,10 +6,11 @@ import type { lineSchema } from './invoices.js';
 /** A validated document line: description, SAC/HSN, qty (thousandths), unit, rate, GST rate. */
 export type DocLine = z.output<typeof lineSchema>;
 
-/** Quotation and proforma lines store only what was entered; amounts are recomputed on read. */
+/** Quotation, proforma and purchase-order lines store only what was entered; amounts are recomputed on read. */
 const TABLES = {
   quotation: { table: 'quotation_line', fk: 'quotation_id' },
   proforma: { table: 'proforma_line', fk: 'proforma_id' },
+  purchaseOrder: { table: 'purchase_order_line', fk: 'purchase_order_id' },
 } as const;
 type Kind = keyof typeof TABLES;
 

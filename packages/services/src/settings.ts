@@ -26,7 +26,8 @@ export interface Letterhead {
   bankBranch: string | null;
 }
 
-const SALES_DOCS = ['quotes', 'proformas', 'invoices', 'receipts'] as const;
+/** Printed documents: sales, and purchase orders and bills (BUG-116). */
+const SALES_DOCS = ['quotes', 'proformas', 'invoices', 'receipts', 'pos', 'bills'] as const;
 
 export class SettingsService {
   constructor(private readonly pool: pg.Pool) {}
@@ -34,10 +35,12 @@ export class SettingsService {
   /** What every signed-in user may see: company name, lock date and FY (header, nav, dates). */
   async companyInfo(
     actor: Actor,
-  ): Promise<Pick<CompanySettings, 'name' | 'lockDate' | 'fyStartMonth'>> {
+  ): Promise<Pick<CompanySettings, 'name' | 'lockDate' | 'fyStartMonth' | 'stateCode' | 'gstin'>> {
     if (!actor.active) throw new DomainError('UNAUTHENTICATED', 'Please sign in again.');
-    const { name, lockDate, fyStartMonth } = await this.read(actor);
-    return { name, lockDate, fyStartMonth };
+    const { name, lockDate, fyStartMonth, stateCode, gstin } = await this.read(actor);
+    // The GST state drives CGST+SGST vs IGST previews on every form (BUG-116); the GSTIN
+    // decides whether a GSTR-1 file can be produced (BUG-138).
+    return { name, lockDate, fyStartMonth, stateCode, gstin };
   }
 
   /**
