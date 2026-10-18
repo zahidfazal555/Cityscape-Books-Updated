@@ -37,6 +37,13 @@ export function financialYear(value: IsoDate, startMonth = 4): string {
   return startMonth === 1 ? yy(startYear) : `${yy(startYear)}-${yy(startYear + 1)}`;
 }
 
+/** First day of the financial year containing a date, e.g. 2026-10-14 → 2026-04-01. */
+export function financialYearStart(value: IsoDate, startMonth = 4): IsoDate {
+  const { y, m } = parseIsoDate(value);
+  const startYear = m >= startMonth ? y : y - 1;
+  return `${startYear}-${String(startMonth).padStart(2, '0')}-01`;
+}
+
 /** Today's business date in the company's time zone (India by default), as YYYY-MM-DD. */
 export function todayIn(timeZone = 'Asia/Kolkata', now: Date = new Date()): IsoDate {
   return new Intl.DateTimeFormat('en-CA', {

@@ -1,19 +1,25 @@
 import { can, formatDate, todayIn } from '@csd/core';
 import { redirect } from 'next/navigation';
+import {
+  AgeingBars,
+  Alerts,
+  Kpis,
+  ProjectsTable,
+  SpendDonut,
+} from '@/components/dashboard/dashboard-view';
 import { EmptyState } from '@/components/ui';
 import { istHour } from '@/lib/format';
 import { getSession } from '@/lib/session';
 import { services } from '@/lib/server';
 
+/** README §2: greeting, alerts, KPI cards, projects, spend by category and receivables ageing. */
 export default async function DashboardPage() {
   const { actor, name } = await getSession();
   // README §17: the site engineer works from the mobile layout.
   if (actor.role === 'site') redirect('/site');
   const hour = istHour();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-  const projects = can(actor, 'projects', 'view')
-    ? await services().projects.list(actor, 'active')
-    : [];
+  const d = can(actor, 'dashboard', 'view') ? await services().dashboard.summary(actor) : null;
 
   return (
     <div className="flex flex-col gap-5">
@@ -23,30 +29,21 @@ export default async function DashboardPage() {
         </h1>
         <p className="text-[13px] text-muted">{formatDate(todayIn())}</p>
       </div>
-      {!can(actor, 'dashboard', 'view') ? (
+      {d === null ? (
         <EmptyState>Your role has no dashboard. Use the menu to open your work.</EmptyState>
       ) : (
-        <section className="rounded-lg border border-line bg-white p-4">
-          <h2 className="mb-3 text-[15px] font-semibold">Active projects</h2>
-          {projects.length === 0 ? (
-            <EmptyState>No active projects yet.</EmptyState>
-          ) : (
-            <ul className="divide-y divide-divider">
-              {projects.map((p) => (
-                <li key={p.id} className="flex items-center justify-between py-2 text-[13px]">
-                  <span>
-                    <span className="mr-2 font-mono text-[11.5px] text-muted">{p.code}</span>
-                    {p.name}
-                  </span>
-                  <span className="text-muted">{p.clientName}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-          <p className="mt-3 text-xs text-subtle">
-            KPIs, budget alerts and ageing arrive with Sales and Accounts.
-          </p>
-        </section>
+        <>
+          <Alerts alerts={d.alerts} />
+          <Kpis kpis={d.kpis} />
+          <section>
+            <h2 className="mb-2 text-[15px] font-semibold">Active projects</h2>
+            <ProjectsTable projects={d.projects} />
+          </section>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <SpendDonut spend={d.spendByCategory} />
+            <AgeingBars ageing={d.ageing} />
+          </div>
+        </>
       )}
     </div>
   );

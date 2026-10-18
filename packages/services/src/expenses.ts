@@ -23,6 +23,7 @@ import { postJournal, reverseJournal, withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import { z } from 'zod';
 import { claimAttachment } from './attachments.js';
+import { notifyBudget } from './budget-alerts.js';
 import { assertLiveProject } from './purchase-orders.js';
 import { companyRow, isoDate, parse, tenantOf as ctx } from './validation.js';
 
@@ -500,6 +501,8 @@ async function approveTx(
     [id, journalId],
   );
   await writeAudit(c, { action: 'approve', entity: 'expense', entityId: id });
+  // Tech Spec §9: after each approval, tell the Owner when a project crosses 85% or 100%.
+  await notifyBudget(c);
 }
 
 /** Dr project cost (category account) / Cr cash, bank or UPI. */

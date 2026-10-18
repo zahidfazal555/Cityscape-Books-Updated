@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { assertNotLocked, financialYear, formatDate, parseIsoDate } from '../src/index.js';
+import {
+  assertNotLocked,
+  financialYear,
+  financialYearStart,
+  formatDate,
+  parseIsoDate,
+} from '../src/index.js';
 
 describe('dates and financial year', () => {
   it('formats as DD MMM YYYY', () => {
@@ -15,6 +21,9 @@ describe('dates and financial year', () => {
     expect(financialYear('2026-04-01')).toBe('26-27');
     expect(financialYear('2027-03-31')).toBe('26-27');
     expect(financialYear('2026-03-31')).toBe('25-26');
+    expect(financialYearStart('2026-10-14')).toBe('2026-04-01');
+    expect(financialYearStart('2027-03-31')).toBe('2026-04-01');
+    expect(financialYearStart('2026-10-14', 1)).toBe('2026-01-01');
     expect(financialYear('2099-12-01')).toBe('99-00');
     expect(financialYear('2026-06-01', 1)).toBe('26');
   });
