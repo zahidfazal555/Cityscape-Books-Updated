@@ -501,12 +501,10 @@ async function approveTx(
     [id, journalId],
   );
   await writeAudit(c, { action: 'approve', entity: 'expense', entityId: id });
-  // Tech Spec §9: after each approval, tell the Owner when a project crosses 85% or 100%.
-  await notifyBudget(c);
 }
 
 /** Dr project cost (category account) / Cr cash, bank or UPI. */
-function postExpense(
+async function postExpense(
   c: pg.PoolClient,
   id: string,
   e: {
@@ -518,7 +516,7 @@ function postExpense(
     particulars: string;
   },
 ): Promise<string> {
-  return postJournal(c, {
+  const journalId = await postJournal(c, {
     txnDate: e.txnDate,
     sourceType: 'expense',
     sourceId: id,
@@ -528,6 +526,9 @@ function postExpense(
       { accountCode: ACCOUNT_FOR_MODE[e.mode], credit: e.amount, projectId: e.projectId },
     ],
   });
+  // Tech Spec §9: every posting to a project's cost can cross its budget line.
+  await notifyBudget(c, [e.projectId]);
+  return journalId;
 }
 
 async function loadRow(

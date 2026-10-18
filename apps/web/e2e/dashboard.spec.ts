@@ -32,7 +32,7 @@ test('dashboard (README §2): the Owner sees KPIs, projects with net value, spen
     page.getByRole('heading', { name: 'Receivables ageing (days overdue)' }),
   ).toBeVisible();
   // A project row opens the project.
-  await projects.getByRole('row').nth(1).click();
+  await projects.getByRole('row').nth(1).getByRole('link').click();
   await expect(page).toHaveURL(/\/projects\/[0-9a-f-]{36}$/);
   expect(violations).toEqual([]);
 });

@@ -63,20 +63,30 @@ export function Kpis({ kpis }: { kpis: Dashboard['kpis'] }) {
   );
 }
 
-function BudgetBar({ bp, hasBudget }: { bp: number; hasBudget: boolean }) {
-  if (!hasBudget) return <span className="text-xs text-subtle">No budget</span>;
-  const tone = bp > 10_000 ? 'bg-danger' : bp >= 8_500 ? 'bg-[#E0A030]' : 'bg-success';
+function BudgetBar({ p }: { p: DashboardProject }) {
+  if (p.costBudget <= 0) return <span className="text-xs text-subtle">No budget</span>;
+  const tone =
+    p.level === 'red' ? 'bg-danger' : p.level === 'amber' ? 'bg-[#E0A030]' : 'bg-success';
   return (
     <span className="flex items-center gap-2">
       <span className="h-2 flex-1 overflow-hidden rounded-full bg-track">
-        <span className={`block h-full ${tone}`} style={{ width: `${Math.min(100, bp / 100)}%` }} />
+        <span
+          className={`block h-full ${tone}`}
+          style={{ width: `${Math.min(100, p.budgetUsedBp / 100)}%` }}
+        />
       </span>
-      <span className="num w-10 text-right text-xs">{Math.round(bp / 100)}%</span>
+      <span className="num w-10 text-right text-xs">{Math.floor(p.budgetUsedBp / 100)}%</span>
     </span>
   );
 }
 
-/** Projects table: Net value only with `pnl` (the service leaves it out otherwise). */
+const HEAD =
+  'grid h-9 items-center gap-3 border-b border-divider bg-thead px-4 text-[11px] font-semibold uppercase tracking-[.05em] text-muted';
+
+/**
+ * Projects table: Net value only with `pnl` (the service leaves it out otherwise). Rows are real
+ * table rows with cells; the project name is the link, stretched over the row (BUG-201).
+ */
 export function ProjectsTable({ projects }: { projects: DashboardProject[] }) {
   const pnl = projects.some((p) => p.net !== undefined);
   const cols = pnl ? '32px 2.2fr 1fr 1fr 1fr 1fr 1.3fr' : '32px 2.2fr 1fr 1fr 1fr 1.3fr';
@@ -84,11 +94,7 @@ export function ProjectsTable({ projects }: { projects: DashboardProject[] }) {
   return (
     <div className="overflow-x-auto rounded-lg border border-line bg-white">
       <div role="table" aria-label="Projects" className="min-w-[760px] text-[13px]">
-        <div
-          role="row"
-          className="grid h-9 items-center gap-3 border-b border-divider bg-thead px-4 text-[11px] font-semibold uppercase tracking-[.05em] text-muted"
-          style={{ gridTemplateColumns: cols }}
-        >
+        <div role="row" className={HEAD} style={{ gridTemplateColumns: cols }}>
           <span role="columnheader">#</span>
           <span role="columnheader">Project</span>
           <span role="columnheader" className="text-right">
@@ -108,31 +114,46 @@ export function ProjectsTable({ projects }: { projects: DashboardProject[] }) {
           <span role="columnheader">Budget used</span>
         </div>
         {projects.map((p, i) => (
-          <Link
+          <div
             key={p.projectId}
             role="row"
-            href={`/projects/${p.projectId}`}
-            className="grid min-h-[48px] items-center gap-3 border-b border-divider px-4 py-2 last:border-b-0 hover:bg-thead"
+            className="relative grid min-h-[48px] items-center gap-3 border-b border-divider px-4 py-2 last:border-b-0 hover:bg-thead"
             style={{ gridTemplateColumns: cols }}
           >
-            <span className="num text-muted">{i + 1}</span>
-            <span className="min-w-0">
-              <span className="block truncate font-medium">{p.name}</span>
+            <span role="cell" className="num text-muted">
+              {i + 1}
+            </span>
+            <span role="cell" className="min-w-0">
+              <Link
+                href={`/projects/${p.projectId}`}
+                className="block truncate font-medium after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-primary"
+              >
+                {p.name}
+              </Link>
               <span className="font-mono text-[11.5px] text-muted">{p.code}</span>
               <span className="text-[12px] text-muted"> · {p.clientName}</span>
             </span>
-            <span className="num text-right">{rupees(p.invoiceValue)}</span>
-            <span className="num text-right text-success">{rupees(p.income)}</span>
-            <span className="num text-right text-danger">{rupees(p.expense)}</span>
+            <span role="cell" className="num text-right">
+              {rupees(p.invoiceValue)}
+            </span>
+            <span role="cell" className="num text-right text-success">
+              {rupees(p.income)}
+            </span>
+            <span role="cell" className="num text-right text-danger">
+              {rupees(p.expense)}
+            </span>
             {pnl ? (
               <span
+                role="cell"
                 className={`num text-right font-medium ${(p.net ?? 0) < 0 ? 'text-danger' : ''}`}
               >
                 {rupees(p.net ?? 0)}
               </span>
             ) : null}
-            <BudgetBar bp={p.budgetUsedBp} hasBudget={p.costBudget > 0} />
-          </Link>
+            <span role="cell">
+              <BudgetBar p={p} />
+            </span>
+          </div>
         ))}
       </div>
     </div>

@@ -19,7 +19,7 @@ import {
 import { withTenant } from '@csd/db';
 import type pg from 'pg';
 import { ApprovalsService } from './approvals.js';
-import { BUDGET_AMBER_BP, BUDGET_RED_BP, COST_ACCOUNTS, notifyBudget } from './budget-alerts.js';
+import { COST_ACCOUNTS, budgetLevel, type BudgetLevel } from './budget-alerts.js';
 import { MONEY_ACCOUNTS } from './banking.js';
 import { companyRow, tenantOf as ctx } from './validation.js';
 
@@ -56,8 +56,10 @@ export interface DashboardProject {
   /** Income less expense: only with `pnl` (Tech Spec §5). */
   net?: Paise;
   costBudget: Paise;
-  /** Share of the cost budget used, in basis points (0 without a budget). */
+  /** Share of the cost budget used, in basis points (0 without a budget), for display. */
   budgetUsedBp: number;
+  /** Amber from 85%, red above 100%, on exact paise (BUG-199). */
+  level: BudgetLevel;
 }
 
 export interface Dashboard {
@@ -85,9 +87,9 @@ export class DashboardService {
     const waiting = canApprove(actor) ? await this.approvals.count(actor) : null;
     const data = await withTenant(this.pool, ctx(actor), async (c) => {
       const scope = projectScope(actor);
-      if (canApprove(actor)) await notifyBudget(c);
       return {
-        projects: await projectRows(c, scope),
+        // The per-project money columns need the projects right too (BUG-200).
+        projects: can(actor, 'projects', 'view') ? await projectRows(c, scope) : [],
         receivables: await receivables(c, scope),
         payables: await sumOf(c, PAYABLES, scope),
         cashAndBank: can(actor, 'banking', 'view') && scope === null ? await cashAndBank(c) : null,
@@ -122,9 +124,9 @@ function alertsFor(waiting: number | null, projects: DashboardProject[]): Dashbo
       href: '/approvals',
     });
   for (const p of projects) {
-    if (p.costBudget <= 0 || p.budgetUsedBp < BUDGET_AMBER_BP) continue;
+    if (p.level === 'ok') continue;
     const pct = Math.floor(p.budgetUsedBp / 100);
-    const over = p.budgetUsedBp > BUDGET_RED_BP;
+    const over = p.level === 'red';
     alerts.push({
       kind: 'budget',
       tone: over ? 'red' : 'amber',
@@ -176,6 +178,7 @@ async function projectRows(c: pg.PoolClient, scope: Scope): Promise<DashboardPro
       net: income - expense,
       costBudget,
       budgetUsedBp: costBudget > 0 ? Math.round((expense / costBudget) * 10_000) : 0,
+      level: budgetLevel(expense, costBudget),
     };
   });
 }
