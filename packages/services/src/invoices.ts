@@ -128,6 +128,12 @@ export interface InvoiceDetail extends InvoiceSummary {
     reference: string | null;
   }[];
   creditNote: { number: string; date: IsoDate; reason: string } | null;
+  /** Proforma advances moved onto this invoice on conversion (part of `received`). */
+  appliedAdvances: Paise;
+  /** Edit is allowed: not cancelled and nothing received (README §5). */
+  editable: boolean;
+  /** Cancel is allowed: not cancelled and no receipts of its own (applied advances are released). */
+  cancellable: boolean;
 }
 
 /**
@@ -253,26 +259,133 @@ function totalsFor(
   return t;
 }
 
+export interface IssueInvoice {
+  projectId: string;
+  invoiceDate: IsoDate;
+  dueDate?: IsoDate | undefined;
+  lines: z.output<typeof lineSchema>[];
+  notes?: string | null | undefined;
+  quotationId?: string | null;
+  proformaId?: string | null;
+}
+
+/**
+ * Issues a tax invoice inside the caller's transaction (used by "New invoice" and by proforma
+ * conversion). The caller has already checked rights and project scope.
+ */
+export async function issueInvoiceTx(
+  c: pg.PoolClient,
+  data: IssueInvoice,
+): Promise<{ id: string; number: string; totals: DocumentTotals }> {
+  assertNotFuture(data.invoiceDate);
+  const company = await companyRow(c);
+  assertNotLocked(data.invoiceDate, company.lock_date, 'invoiceDate');
+  const party = await billTo(c, data.projectId);
+  const dueDate =
+    data.dueDate ?? addDays(data.invoiceDate, party.payment_terms_days ?? DEFAULT_PAYMENT_DAYS);
+  assertDue(data.invoiceDate, dueDate);
+  const totals = totalsFor(data.lines, party.state_code, company);
+  const id = randomUUID();
+  const number = await allocateNumber(c, 'invoice', data.invoiceDate, company.fy_start_month);
+  const journalId = await postJournal(c, {
+    txnDate: data.invoiceDate,
+    sourceType: 'invoice',
+    sourceId: id,
+    narration: `Tax invoice ${number}`,
+    lines: invoiceJournalLines(totals, party.client_id, data.projectId),
+  });
+  await c.query(
+    `INSERT INTO invoice (id, company_id, number, fy, project_id, client_id, client_name, client_gstin, client_address,
+                            place_of_supply, is_inter_state, invoice_date, due_date, subtotal, discount, taxable, cgst,
+                            sgst, igst, round_off, total, notes, journal_id, quotation_id, proforma_id, created_by)
+       VALUES ($1, app_company_id(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+               $20, $21, $22, $23, $24, app_user_id())`,
+    [
+      id,
+      number,
+      financialYear(data.invoiceDate, company.fy_start_month),
+      data.projectId,
+      party.client_id,
+      party.name,
+      party.gstin,
+      party.address,
+      party.state_code,
+      totals.interState,
+      data.invoiceDate,
+      dueDate,
+      ...money(totals),
+      data.notes ?? null,
+      journalId,
+      data.quotationId ?? null,
+      data.proformaId ?? null,
+    ],
+  );
+  await insertLines(c, id, data.lines, totals);
+  await writeAudit(c, {
+    action: 'create',
+    entity: 'invoice',
+    entityId: id,
+    after: { number, ...data, dueDate, total: totals.total },
+  });
+  return { id, number, totals };
+}
+
+export interface InvoiceFilter {
+  projectId?: string | undefined;
+  status?: InvoiceStatus | undefined;
+  /** Only invoices a receipt can still be recorded against (not cancelled, balance due). */
+  open?: boolean | undefined;
+}
+
+async function listRows(
+  c: pg.PoolClient,
+  actor: Actor,
+  filter: InvoiceFilter,
+  limit: number,
+): Promise<InvoiceSummary[]> {
+  const { rows } = await c.query<SummaryRow>(
+    `SELECT * FROM (${WITH_STATUS}) s
+      WHERE ($2::uuid[] IS NULL OR s.project_id = ANY($2::uuid[]))
+        AND ($3::uuid IS NULL OR s.project_id = $3)
+        AND ($4::text IS NULL OR s.status = $4)
+        AND (NOT $5 OR (s.status <> 'cancelled' AND s.balance::numeric > 0))
+      ORDER BY s.invoice_date DESC, s.number DESC LIMIT $6`,
+    [
+      todayIn(),
+      projectScope(actor),
+      filter.projectId ?? null,
+      filter.status ?? null,
+      filter.open ?? false,
+      limit,
+    ],
+  );
+  return rows.map(toSummary);
+}
+
 /** Tax invoices and credit notes (Req §5, FR-3.3.4, UAT 4/5). */
 export class InvoicesService {
   constructor(private readonly pool: pg.Pool) {}
 
-  async list(
-    actor: Actor,
-    filter: { projectId?: string | undefined; status?: InvoiceStatus | undefined } = {},
-  ): Promise<InvoiceSummary[]> {
+  async list(actor: Actor, filter: InvoiceFilter = {}): Promise<InvoiceSummary[]> {
     authorize(actor, 'invoices', 'view');
-    const scope = projectScope(actor);
+    return withTenant(this.pool, ctx(actor), (c) => listRows(c, actor, filter, 500));
+  }
+
+  /**
+   * Every matching invoice for a CSV download. ENGINEERING-STANDARDS H4: an export writes an
+   * audit row (who, what filter, how many rows) in the same transaction as the read.
+   */
+  async export(actor: Actor, filter: InvoiceFilter = {}): Promise<InvoiceSummary[]> {
+    authorize(actor, 'invoices', 'view');
     return withTenant(this.pool, ctx(actor), async (c) => {
-      const { rows } = await c.query<SummaryRow>(
-        `SELECT * FROM (${WITH_STATUS}) s
-          WHERE ($2::uuid[] IS NULL OR s.project_id = ANY($2::uuid[]))
-            AND ($3::uuid IS NULL OR s.project_id = $3)
-            AND ($4::text IS NULL OR s.status = $4)
-          ORDER BY s.invoice_date DESC, s.number DESC LIMIT 500`,
-        [todayIn(), scope, filter.projectId ?? null, filter.status ?? null],
-      );
-      return rows.map(toSummary);
+      const rows = await listRows(c, actor, filter, 50_000);
+      await writeAudit(c, {
+        action: 'export',
+        entity: 'invoice',
+        entityId: null,
+        after: { format: 'csv', filter, rows: rows.length },
+      });
+      return rows;
     });
   }
 
@@ -287,57 +400,8 @@ export class InvoicesService {
     const data = parse(invoiceSchema, input);
     authorize(actor, 'invoices', 'edit');
     assertProjectInScope(actor, data.projectId);
-    assertNotFuture(data.invoiceDate);
-    return withTenant(this.pool, ctx(actor), async (c) => {
-      const company = await companyRow(c);
-      assertNotLocked(data.invoiceDate, company.lock_date, 'invoiceDate');
-      const party = await billTo(c, data.projectId);
-      const dueDate =
-        data.dueDate ?? addDays(data.invoiceDate, party.payment_terms_days ?? DEFAULT_PAYMENT_DAYS);
-      assertDue(data.invoiceDate, dueDate);
-      const totals = totalsFor(data.lines, party.state_code, company);
-      const id = randomUUID();
-      const number = await allocateNumber(c, 'invoice', data.invoiceDate, company.fy_start_month);
-      const journalId = await postJournal(c, {
-        txnDate: data.invoiceDate,
-        sourceType: 'invoice',
-        sourceId: id,
-        narration: `Tax invoice ${number}`,
-        lines: invoiceJournalLines(totals, party.client_id, data.projectId),
-      });
-      await c.query(
-        `INSERT INTO invoice (id, company_id, number, fy, project_id, client_id, client_name, client_gstin, client_address,
-                              place_of_supply, is_inter_state, invoice_date, due_date, subtotal, discount, taxable, cgst,
-                              sgst, igst, round_off, total, notes, journal_id, created_by)
-         VALUES ($1, app_company_id(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                 $20, $21, $22, app_user_id())`,
-        [
-          id,
-          number,
-          financialYear(data.invoiceDate, company.fy_start_month),
-          data.projectId,
-          party.client_id,
-          party.name,
-          party.gstin,
-          party.address,
-          party.state_code,
-          totals.interState,
-          data.invoiceDate,
-          dueDate,
-          ...money(totals),
-          data.notes ?? null,
-          journalId,
-        ],
-      );
-      await insertLines(c, id, data.lines, totals);
-      await writeAudit(c, {
-        action: 'create',
-        entity: 'invoice',
-        entityId: id,
-        after: { number, ...data, dueDate, total: totals.total },
-      });
-      return { id, number };
-    });
+    const { id, number } = await withTenant(this.pool, ctx(actor), (c) => issueInvoiceTx(c, data));
+    return { id, number };
   }
 
   /**
@@ -414,11 +478,14 @@ export class InvoicesService {
     const data = parse(cancelSchema, input);
     authorize(actor, 'invoices', 'full');
     return withTenant(this.pool, ctx(actor), async (c) => {
+      // Proforma before invoice: the same order as receipts and conversions take, so no deadlock.
+      await c.query('SELECT 1 FROM proforma WHERE invoice_id = $1 FOR UPDATE', [id]);
       const inv = await this.load(c, actor, id, true);
       authorize(actor, 'invoices', 'full', inv.projectId);
       if (inv.status === 'cancelled')
         throw new DomainError('CONFLICT', 'This invoice is already cancelled.');
-      if (inv.received > 0)
+      const advances = await appliedAdvances(c, id);
+      if (inv.received > advances)
         throw new DomainError('CONFLICT', 'Delete its receipts before cancelling this invoice.');
       if (data.cnDate < inv.invoiceDate) {
         throw new DomainError(
@@ -470,6 +537,8 @@ export class InvoicesService {
         `UPDATE invoice SET status = 'cancelled', version = version + 1 WHERE id = $1`,
         [id],
       );
+      if (advances > 0)
+        await releaseAdvances(c, inv, advances, { cnId, number, cnDate: data.cnDate });
       await writeAudit(c, {
         action: 'cancel',
         entity: 'invoice',
@@ -498,7 +567,17 @@ export class InvoicesService {
     // Out-of-scope invoices are not found (FR-2.4.2), whatever the rights.
     if (!r || !can(actor, 'invoices', 'view', r.project_id))
       throw new DomainError('NOT_FOUND', 'Invoice not found.');
-    return { ...toSummary(r), ...detailFields(r), ...(await children(c, id)) };
+    const summary = toSummary(r);
+    const advances = await appliedAdvances(c, id);
+    const live = summary.status !== 'cancelled';
+    return {
+      ...summary,
+      ...detailFields(r),
+      ...(await children(c, id)),
+      appliedAdvances: advances,
+      editable: live && summary.received === 0,
+      cancellable: live && summary.received <= advances,
+    };
   }
 }
 
@@ -607,6 +686,57 @@ function assertDue(invoiceDate: IsoDate, dueDate: IsoDate): void {
       'dueDate',
     );
   }
+}
+
+/** Proforma advances applied to this invoice on conversion (live receipts only). */
+async function appliedAdvances(c: pg.PoolClient, invoiceId: string): Promise<Paise> {
+  const { rows } = await c.query<{ amount: string }>(
+    `SELECT coalesce(sum(a.amount), 0)::text AS amount FROM receipt_allocation a JOIN receipt r ON r.id = a.receipt_id
+      WHERE a.invoice_id = $1 AND a.applied_at IS NOT NULL AND r.deleted_at IS NULL`,
+    [invoiceId],
+  );
+  return fromDecimalString(rows[0]?.amount ?? '0');
+}
+
+/**
+ * BUG-084: cancelling a converted invoice hands its advances back to the proforma. They are
+ * held as customer advances again (Dr receivable / Cr customer advances on the credit-note
+ * date), and the proforma returns to Sent so it can be corrected and converted again.
+ */
+async function releaseAdvances(
+  c: pg.PoolClient,
+  inv: InvoiceDetail,
+  amount: Paise,
+  cn: { cnId: string; number: string; cnDate: IsoDate },
+): Promise<void> {
+  await postJournal(c, {
+    txnDate: cn.cnDate,
+    sourceType: 'advance_released',
+    sourceId: cn.cnId,
+    narration: `Advances on ${inv.number} released by credit note ${cn.number}`,
+    lines: [
+      { accountCode: '1100', debit: amount, contactId: inv.clientId, projectId: inv.projectId },
+      { accountCode: '2100', credit: amount, contactId: inv.clientId, projectId: inv.projectId },
+    ],
+  });
+  // The release is dated on the credit note: GST reports the advance again in that month (BUG-120).
+  await c.query(
+    `INSERT INTO advance_event (company_id, allocation_id, kind, event_date, invoice_id)
+     SELECT app_company_id(), id, 'released', $2, $1 FROM receipt_allocation
+      WHERE invoice_id = $1 AND applied_at IS NOT NULL`,
+    [inv.id, cn.cnDate],
+  );
+  await c.query(
+    `UPDATE receipt_allocation SET invoice_id = NULL, applied_at = NULL
+      WHERE invoice_id = $1 AND applied_at IS NOT NULL`,
+    [inv.id],
+  );
+  await c.query(
+    `UPDATE proforma SET status = 'sent', invoice_id = NULL, converted_at = NULL, advance_journal_id = NULL,
+            version = version + 1, updated_by = app_user_id()
+      WHERE invoice_id = $1`,
+    [inv.id],
+  );
 }
 
 async function journalOf(c: pg.PoolClient, invoiceId: string): Promise<string> {

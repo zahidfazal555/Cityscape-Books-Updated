@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RateLimiter } from '../src/lib/rate-limit';
 import { safeNext } from '../src/lib/redirect';
-import { MAX_BODY_BYTES, parseIp, readJson, trustedIp } from '../src/lib/http';
+import { MAX_BODY_BYTES, ipKey, parseIp, readJson, trustedIp } from '../src/lib/http';
 import { redactForLog } from '../src/lib/log';
 
 describe('safeNext (no open redirect)', () => {
@@ -33,6 +33,17 @@ describe('client IP from X-Forwarded-For', () => {
     expect(trustedIp('6.6.6.6, 203.0.113.7:5000', 1)).toBe('203.0.113.7');
     expect(trustedIp('6.6.6.6', 0)).toBeNull();
     expect(trustedIp('', 1)).toBeNull();
+  });
+
+  it('BUG-185: rate limits key an IPv6 client by its /64, and IPv4-mapped as IPv4', () => {
+    const a = ipKey('2001:db8:aa:bb:1:2:3:4');
+    expect(a).toBe('ip6:2001:db8:aa:bb::/64');
+    expect(ipKey('2001:0db8:00aa:00bb:ffff::9')).toBe(a);
+    expect(ipKey('2001:db8:aa::1')).toBe('ip6:2001:db8:aa:0::/64');
+    expect(ipKey('::1')).toBe('ip6:0:0:0:0::/64');
+    expect(ipKey('::ffff:203.0.113.7')).toBe('ip:203.0.113.7');
+    expect(ipKey('203.0.113.7')).toBe('ip:203.0.113.7');
+    expect(ipKey(null)).toBe('ip:unknown');
   });
 });
 
@@ -103,6 +114,21 @@ describe('log redaction', () => {
     expect(out).toContain('"company":"Cityscape"');
     expect(out).toContain('"refreshToken":"[redacted]"');
   });
+
+  it('BUG-186: drops the row values a Postgres error quotes', () => {
+    const pgError = Object.assign(new Error('new row violates check constraint "contact_pan"'), {
+      code: '23514',
+      constraint: 'contact_pan',
+      detail: 'Failing row contains (c1, Sri Murugan Traders, ABCDE1234F, 9876543210).',
+      where: 'SQL statement "…"',
+      parameters: ['ABCDE1234F'],
+    });
+    const out = JSON.stringify(redactForLog({ error: pgError }));
+    expect(out).not.toContain('ABCDE1234F');
+    expect(out).not.toContain('9876543210');
+    expect(out).toContain('"code":"23514"');
+    expect(out).toContain('"constraint":"contact_pan"');
+  });
 });
 
 describe('configuration guards', () => {
@@ -130,8 +156,13 @@ describe('configuration guards', () => {
         MAIL_MODE: 'outbox',
         CSD_ALLOW_OUTBOX_IN_PRODUCTION: 'e2e',
         CSD_LOGIN_LIMIT_PER_MINUTE: '10',
+        ATTACHMENT_DIR: '/var/lib/csd/attachments',
       }),
     ).resolves.toMatchObject({ CSD_LOGIN_LIMIT_PER_MINUTE: 10 });
+    // Bill photos need a private directory in production.
+    await expect(
+      load({ NODE_ENV: 'production', MAIL_MODE: 'outbox', CSD_ALLOW_OUTBOX_IN_PRODUCTION: 'e2e' }),
+    ).rejects.toThrow('ATTACHMENT_DIR');
     await expect(
       load({ NODE_ENV: 'development', CSD_LOGIN_LIMIT_PER_MINUTE: '-1' }),
     ).rejects.toThrow('CSD_LOGIN_LIMIT_PER_MINUTE');
@@ -141,5 +172,16 @@ describe('configuration guards', () => {
     await expect(
       load({ NODE_ENV: 'production', CSD_LOGIN_LIMIT_PER_MINUTE: '1000' }),
     ).rejects.toThrow();
+    // BUG-185: production must sit behind a proxy that sets X-Forwarded-For.
+    await expect(
+      load({
+        NODE_ENV: 'production',
+        MAIL_MODE: 'smtp',
+        SMTP_URL: 'smtps://u:p@mail.example:465',
+        MAIL_FROM: 'books@example.in',
+        ATTACHMENT_DIR: '/data/attachments',
+        TRUSTED_PROXIES: '0',
+      }),
+    ).rejects.toThrow('TRUSTED_PROXIES');
   });
 });

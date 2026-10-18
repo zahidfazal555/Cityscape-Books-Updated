@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  ACCOUNT_FOR_MODE,
   DomainError,
   assertId,
   assertNotLocked,
@@ -22,22 +23,20 @@ import { companyRow, isoDate, parse, tenantOf as ctx, type CompanyRow } from './
 export const RECEIPT_MODES = ['bank', 'upi', 'cash', 'cheque'] as const;
 export type ReceiptMode = (typeof RECEIPT_MODES)[number];
 
-/** Where the money lands (chart of accounts in 0001). Cheques clear into the bank account. */
-const ACCOUNT_FOR_MODE: Record<ReceiptMode, '1000' | '1010' | '1020'> = {
-  cash: '1000',
-  bank: '1010',
-  cheque: '1010',
-  upi: '1020',
-};
-
 const receiptSchema = z
   .object({
-    invoiceId: z.string().uuid('Choose an invoice.'),
+    /** Exactly one: an invoice (payment) or a proforma (advance, Req FR-6.4). */
+    invoiceId: z.string().uuid('Choose an invoice.').optional(),
+    proformaId: z.string().uuid('Choose a proforma.').optional(),
     receiptDate: isoDate,
     amount: z.number().int('Amount must be in paise.').positive('Amount must be more than zero.'),
     mode: z.enum(RECEIPT_MODES),
     reference: z.string().trim().max(100).nullable().optional(),
     receivedBy: z.string().trim().max(80).nullable().optional(),
+  })
+  .refine((r) => (r.invoiceId === undefined) !== (r.proformaId === undefined), {
+    message: 'Choose an invoice or a proforma.',
+    path: ['invoiceId'],
   })
   .refine((r) => r.mode === 'cash' || (r.reference ?? '').length > 0, {
     message: 'Enter the reference (UTR, UPI or cheque number).',
@@ -54,13 +53,20 @@ export interface Receipt {
   projectId: string;
   projectCode: string;
   invoiceNumber: string | null;
+  /** Set for an advance received against a proforma. */
+  proformaNumber: string | null;
+  /** An advance already moved onto its tax invoice: it cannot be deleted. */
+  applied: boolean;
   amount: Paise;
   mode: ReceiptMode;
   reference: string | null;
   receivedBy: string | null;
 }
 
-/** Client receipts (Req §6): against an open invoice; amount ≤ balance; reference unless cash. */
+/**
+ * Client receipts (Req §6): against an open invoice or, as an advance, an open proforma;
+ * amount ≤ balance; reference unless cash.
+ */
 export class ReceiptsService {
   constructor(private readonly pool: pg.Pool) {}
 
@@ -76,6 +82,8 @@ export class ReceiptsService {
         project_id: string;
         project_code: string;
         invoice_number: string | null;
+        proforma_number: string | null;
+        applied: boolean;
         amount: string;
         mode: ReceiptMode;
         reference: string | null;
@@ -85,6 +93,10 @@ export class ReceiptsService {
                 p.code AS project_code,
                 (SELECT string_agg(i.number, ', ') FROM receipt_allocation a JOIN invoice i ON i.id = a.invoice_id
                   WHERE a.receipt_id = r.id) AS invoice_number,
+                (SELECT string_agg(f.number, ', ') FROM receipt_allocation a JOIN proforma f ON f.id = a.proforma_id
+                  WHERE a.receipt_id = r.id) AS proforma_number,
+                EXISTS (SELECT 1 FROM receipt_allocation a WHERE a.receipt_id = r.id AND a.applied_at IS NOT NULL)
+                  AS applied,
                 r.amount::text, r.mode, r.reference, r.received_by
            FROM receipt r JOIN contact k ON k.id = r.client_id JOIN project p ON p.id = r.project_id
           WHERE r.deleted_at IS NULL AND ($1::uuid[] IS NULL OR r.project_id = ANY($1::uuid[]))
@@ -100,6 +112,8 @@ export class ReceiptsService {
         projectId: r.project_id,
         projectCode: r.project_code,
         invoiceNumber: r.invoice_number,
+        proformaNumber: r.proforma_number,
+        applied: r.applied,
         amount: fromDecimalString(r.amount),
         mode: r.mode,
         reference: r.reference,
@@ -108,9 +122,27 @@ export class ReceiptsService {
     });
   }
 
+  /** Live receipts by mode, over every receipt in scope (not just the listed page). */
+  async totalsByMode(actor: Actor): Promise<Record<ReceiptMode, Paise>> {
+    authorize(actor, 'receipts', 'view');
+    const scope = projectScope(actor);
+    return withTenant(this.pool, ctx(actor), async (c) => {
+      const { rows } = await c.query<{ mode: ReceiptMode; total: string }>(
+        `SELECT mode, sum(amount)::text AS total FROM receipt
+          WHERE deleted_at IS NULL AND ($1::uuid[] IS NULL OR project_id = ANY($1::uuid[]))
+          GROUP BY mode`,
+        [scope],
+      );
+      const totals: Record<ReceiptMode, Paise> = { bank: 0, upi: 0, cash: 0, cheque: 0 };
+      for (const r of rows) totals[r.mode] = fromDecimalString(r.total);
+      return totals;
+    });
+  }
+
   /**
-   * Records RCT/FY/####: Dr cash/bank/UPI, Cr receivable. The invoice row is locked so two
-   * receipts can never together exceed its balance.
+   * Records RCT/FY/####. Against an invoice: Dr cash/bank/UPI, Cr receivable. Against a proforma
+   * (an advance): Dr cash/bank/UPI, Cr customer advances, never revenue (FR-6.1). The document
+   * row is locked so two receipts can never together exceed its balance.
    */
   async record(actor: Actor, input: ReceiptInput): Promise<{ id: string; number: string }> {
     const data = parse(receiptSchema, input);
@@ -123,8 +155,10 @@ export class ReceiptsService {
       );
     }
     return withTenant(this.pool, ctx(actor), async (c) => {
-      const inv = await openInvoice(c, actor, data.invoiceId);
-      const company = await checkReceipt(c, data, inv);
+      const doc = data.proformaId
+        ? await openProforma(c, actor, data.proformaId)
+        : await openInvoice(c, actor, data.invoiceId ?? '');
+      const company = await checkReceipt(c, data, doc);
       const id = randomUUID();
       const number = await allocateNumber(c, 'receipt', data.receiptDate, company.fy_start_month);
       const account = ACCOUNT_FOR_MODE[data.mode];
@@ -132,14 +166,16 @@ export class ReceiptsService {
         txnDate: data.receiptDate,
         sourceType: 'receipt',
         sourceId: id,
-        narration: `Receipt ${number} for ${inv.number}`,
+        narration: data.proformaId
+          ? `Advance ${number} against ${doc.number}`
+          : `Receipt ${number} for ${doc.number}`,
         lines: [
-          { accountCode: account, debit: data.amount, projectId: inv.project_id },
+          { accountCode: account, debit: data.amount, projectId: doc.project_id },
           {
-            accountCode: '1100',
+            accountCode: data.proformaId ? '2100' : '1100',
             credit: data.amount,
-            contactId: inv.client_id,
-            projectId: inv.project_id,
+            contactId: doc.client_id,
+            projectId: doc.project_id,
           },
         ],
       });
@@ -151,8 +187,8 @@ export class ReceiptsService {
           id,
           number,
           data.receiptDate,
-          inv.client_id,
-          inv.project_id,
+          doc.client_id,
+          doc.project_id,
           toDecimalString(data.amount),
           data.mode,
           data.reference || null,
@@ -162,8 +198,9 @@ export class ReceiptsService {
         ],
       );
       await c.query(
-        `INSERT INTO receipt_allocation (company_id, receipt_id, invoice_id, amount) VALUES (app_company_id(), $1, $2, $3)`,
-        [id, data.invoiceId, toDecimalString(data.amount)],
+        `INSERT INTO receipt_allocation (company_id, receipt_id, invoice_id, proforma_id, amount)
+         VALUES (app_company_id(), $1, $2, $3, $4)`,
+        [id, data.invoiceId ?? null, data.proformaId ?? null, toDecimalString(data.amount)],
       );
       await writeAudit(c, {
         action: 'create',
@@ -180,6 +217,7 @@ export class ReceiptsService {
     assertId(id, 'Receipt');
     authorize(actor, 'receipts', 'full');
     await withTenant(this.pool, ctx(actor), async (c) => {
+      await lockParents(c, id);
       const { rows } = await c.query<{
         number: string;
         project_id: string;
@@ -196,6 +234,17 @@ export class ReceiptsService {
         throw new DomainError('NOT_FOUND', 'Receipt not found.');
       authorize(actor, 'receipts', 'full', r.project_id);
       if (r.deleted_at) throw new DomainError('CONFLICT', 'This receipt is already deleted.');
+      const applied = await c.query<{ number: string }>(
+        `SELECT i.number FROM receipt_allocation a JOIN invoice i ON i.id = a.invoice_id
+          WHERE a.receipt_id = $1 AND a.applied_at IS NOT NULL`,
+        [id],
+      );
+      if (applied.rows[0]) {
+        throw new DomainError(
+          'CONFLICT',
+          `This advance was applied to tax invoice ${applied.rows[0].number} and cannot be deleted.`,
+        );
+      }
       const reversal = await reverseJournal(
         c,
         r.journal_id,
@@ -220,16 +269,16 @@ export class ReceiptsService {
 async function checkReceipt(
   c: pg.PoolClient,
   data: { receiptDate: string; amount: Paise },
-  inv: { invoice_date: string; balance: string },
+  doc: OpenDocument,
 ): Promise<CompanyRow> {
-  if (data.receiptDate < inv.invoice_date) {
+  if (data.receiptDate < doc.doc_date) {
     throw new DomainError(
       'VALIDATION',
-      'The receipt cannot be dated before the invoice.',
+      `The receipt cannot be dated before the ${doc.kind}.`,
       'receiptDate',
     );
   }
-  const balance = fromDecimalString(inv.balance);
+  const balance = fromDecimalString(doc.balance);
   if (data.amount > balance) {
     throw new DomainError(
       'VALIDATION',
@@ -242,7 +291,69 @@ async function checkReceipt(
   return company;
 }
 
-async function openInvoice(c: pg.PoolClient, actor: Actor, invoiceId: string) {
+interface OpenDocument {
+  kind: 'invoice' | 'proforma';
+  number: string;
+  project_id: string;
+  client_id: string;
+  doc_date: string;
+  balance: string;
+}
+
+/**
+ * Locks the invoice or proforma a receipt is allocated to, before the receipt itself. Recording
+ * and converting lock in the same order (document, then receipt), so a delete can never slip
+ * between a conversion reading the advances and applying them.
+ */
+async function lockParents(c: pg.PoolClient, receiptId: string): Promise<void> {
+  await c.query(
+    `SELECT 1 FROM proforma WHERE id IN (SELECT proforma_id FROM receipt_allocation WHERE receipt_id = $1)
+        ORDER BY id FOR UPDATE`,
+    [receiptId],
+  );
+  await c.query(
+    `SELECT 1 FROM invoice WHERE id IN (SELECT invoice_id FROM receipt_allocation WHERE receipt_id = $1)
+        ORDER BY id FOR UPDATE`,
+    [receiptId],
+  );
+}
+
+async function openProforma(
+  c: pg.PoolClient,
+  actor: Actor,
+  proformaId: string,
+): Promise<OpenDocument> {
+  // Lock first, read the balance in a later statement (see openInvoice).
+  await c.query('SELECT 1 FROM proforma WHERE id = $1 FOR UPDATE', [proformaId]);
+  const { rows } = await c.query<Omit<OpenDocument, 'kind'> & { status: string }>(
+    `SELECT f.number, f.project_id, f.client_id, f.status, to_char(f.pf_date, 'YYYY-MM-DD') AS doc_date,
+            b.balance::text AS balance
+       FROM proforma f JOIN proforma_balance b ON b.proforma_id = f.id WHERE f.id = $1`,
+    [proformaId],
+  );
+  const pf = rows[0];
+  if (!pf || !can(actor, 'receipts', 'view', pf.project_id))
+    throw new DomainError('NOT_FOUND', 'Proforma not found.');
+  authorize(actor, 'receipts', 'edit', pf.project_id);
+  if (pf.status === 'cancelled')
+    throw new DomainError('VALIDATION', 'This proforma is cancelled.', 'proformaId');
+  if (pf.status === 'converted') {
+    throw new DomainError(
+      'VALIDATION',
+      'This proforma is already converted; record the receipt against its tax invoice.',
+      'proformaId',
+    );
+  }
+  if (fromDecimalString(pf.balance) <= 0)
+    throw new DomainError('VALIDATION', 'This proforma is already fully paid.', 'proformaId');
+  return { kind: 'proforma', ...pf };
+}
+
+async function openInvoice(
+  c: pg.PoolClient,
+  actor: Actor,
+  invoiceId: string,
+): Promise<OpenDocument> {
   // Lock the invoice FIRST, in its own statement. The balance must be read by a later statement:
   // under READ COMMITTED a subquery in the locking statement would still see the snapshot taken
   // before the lock wait, letting concurrent receipts overpay the invoice.
@@ -252,10 +363,10 @@ async function openInvoice(c: pg.PoolClient, actor: Actor, invoiceId: string) {
     project_id: string;
     client_id: string;
     status: string;
-    invoice_date: string;
+    doc_date: string;
     balance: string;
   }>(
-    `SELECT i.number, i.project_id, i.client_id, i.status, to_char(i.invoice_date, 'YYYY-MM-DD') AS invoice_date,
+    `SELECT i.number, i.project_id, i.client_id, i.status, to_char(i.invoice_date, 'YYYY-MM-DD') AS doc_date,
             b.balance::text AS balance
        FROM invoice i JOIN invoice_balance b ON b.invoice_id = i.id WHERE i.id = $1`,
     [invoiceId],
@@ -268,5 +379,5 @@ async function openInvoice(c: pg.PoolClient, actor: Actor, invoiceId: string) {
     throw new DomainError('VALIDATION', 'This invoice is cancelled.', 'invoiceId');
   if (fromDecimalString(inv.balance) <= 0)
     throw new DomainError('VALIDATION', 'This invoice is already paid.', 'invoiceId');
-  return inv;
+  return { kind: 'invoice', ...inv };
 }

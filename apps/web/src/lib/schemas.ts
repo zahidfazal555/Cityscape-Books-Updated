@@ -1,4 +1,5 @@
-import { parse } from '@csd/services';
+import { COST_CATEGORIES } from '@csd/core';
+import { EXPENSE_STATUSES, parse } from '@csd/services';
 import { z } from 'zod';
 
 /** Parses a request body or query; the first problem becomes a 422 on that field. */
@@ -20,3 +21,10 @@ export const changePassword = z.object({
   newPassword: z.string().max(128),
 });
 export const lockDate = z.object({ lockDate: z.string().nullable() });
+
+/** Expense list and export filters (FR-11.1). */
+export const expenseQuery = z.object({
+  projectId: z.string().uuid().optional(),
+  category: z.enum(COST_CATEGORIES).optional(),
+  status: z.enum(EXPENSE_STATUSES).optional(),
+});
