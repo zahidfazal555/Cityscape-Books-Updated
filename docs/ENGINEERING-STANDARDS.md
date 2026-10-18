@@ -104,7 +104,7 @@ packages/db     schema, migrations, RLS policies, seed
 packages/ui     design-token components
 ```
 
-**Code standards:** TypeScript `strict`, ESLint + Prettier (CI-enforced), max function complexity 10, no `any` without a comment, no business rules in UI or route files, money as integer paise in code (`bigint`), converted to `NUMERIC(14,2)` in the DB. Errors use one shape `{code, message, field?}`, with HTTP 403/404/409/422/423 used consistently. Non-obvious decisions are recorded as ADRs in `docs/adr/`.
+**Code standards:** TypeScript `strict`, ESLint + Prettier (CI-enforced), max function complexity 10 (React `.tsx` components 20, because each JSX conditional counts; components may not contain business rules), no `any` without a comment, no business rules in UI or route files, money as integer paise in code (safe integers, see ADR 0001), converted to `NUMERIC(14,2)` in the DB. Errors use one shape `{code, message, field?}`, with HTTP 403/404/409/422/423 used consistently. Non-obvious decisions are recorded as ADRs in `docs/adr/`.
 
 ## 6. Release process (handbook §6, §9)
 

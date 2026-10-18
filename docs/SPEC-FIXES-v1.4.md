@@ -104,7 +104,7 @@ Building these hooks now costs about 2 days. Retrofitting them after go-live mea
 
 - **App:** Next.js 15 (App Router) + TypeScript + Tailwind, with tokens from README "Design tokens".
 - **API:** Next.js route handlers under `/api/v1`, with all business logic in `packages/core` (pure TS services). The handlers stay thin.
-- **DB:** PostgreSQL 16 + Drizzle ORM + SQL migrations. RLS on `company_id`. A balanced-journal trigger.
+- **DB:** PostgreSQL 16, SQL-first migrations (ADR 0001), optional Drizzle query layer. RLS on `company_id`. A balanced-journal trigger.
 - **Jobs:** BullMQ worker (PDF render, GSTR exports, notifications digest).
 - **Files:** S3-compatible private bucket, pre-signed URLs, server-side EXIF strip and re-encode.
 - **Auth:** argon2id; 15-min access JWT + rotating httpOnly refresh cookie; 30-min idle timeout; 5 failures → 15-min lock.
