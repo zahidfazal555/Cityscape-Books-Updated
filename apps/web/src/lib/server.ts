@@ -4,8 +4,22 @@ import path from 'node:path';
 import pg from 'pg';
 import {
   ApprovalsService,
+  KnowledgeBaseService,
+  NotificationsService,
+  SupportDashboardService,
+  TicketBillingService,
+  TicketsService,
+  VisitsService,
+  WarrantyService,
+  InventoryService,
+  LabourService,
+  PayrollService,
   AttachmentsService,
   AuditService,
+  BankingService,
+  GstService,
+  OutstandingService,
+  ReportsService,
   AuthService,
   ContactsService,
   ExpensesService,
@@ -19,6 +33,8 @@ import {
   QuotationsService,
   VendorPaymentsService,
   MemoryMailer,
+  SmtpMailer,
+  type Mailer,
   ProjectsService,
   ReceiptsService,
   SettingsService,
@@ -29,7 +45,7 @@ import { log } from './log';
 
 export interface Services {
   pool: pg.Pool;
-  mailer: MemoryMailer;
+  mailer: Mailer;
   auth: AuthService;
   users: UsersService;
   settings: SettingsService;
@@ -47,6 +63,20 @@ export interface Services {
   attachments: AttachmentsService;
   expenses: ExpensesService;
   approvals: ApprovalsService;
+  banking: BankingService;
+  outstanding: OutstandingService;
+  gst: GstService;
+  reports: ReportsService;
+  payroll: PayrollService;
+  labour: LabourService;
+  inventory: InventoryService;
+  tickets: TicketsService;
+  visits: VisitsService;
+  warranty: WarrantyService;
+  kb: KnowledgeBaseService;
+  ticketBilling: TicketBillingService;
+  supportDashboard: SupportDashboardService;
+  notifications: NotificationsService;
 }
 
 const g = globalThis as unknown as { __csd?: Services };
@@ -63,13 +93,22 @@ export function services(): Services {
     statement_timeout: 15_000,
   });
   pool.on('error', (error) => log('error', 'pg pool error', { error }));
-  const mailer = new MemoryMailer();
+  const mailer =
+    e.MAIL_MODE === 'smtp' && e.SMTP_URL && e.MAIL_FROM
+      ? new SmtpMailer(e.SMTP_URL, e.MAIL_FROM)
+      : new MemoryMailer();
   const auth = new AuthService({
     pool,
     config: { jwtSecret: Buffer.from(e.JWT_SECRET, 'base64'), appUrl: e.APP_URL },
     breach: new HibpBreachChecker(),
     mailer,
-    onMailError: (error, subject) => log('error', 'mail failed', { error, subject }),
+    // Only the error code: SMTP replies can echo the recipient's address (BUG-181).
+    onMailError: (error, subject) =>
+      log('error', 'mail failed', {
+        code: (error as { code?: string }).code ?? 'unknown',
+        responseCode: (error as { responseCode?: number }).responseCode,
+        subject,
+      }),
   });
   g.__csd = {
     pool,
@@ -94,7 +133,21 @@ export function services(): Services {
     ),
     expenses: new ExpensesService(pool),
     approvals: new ApprovalsService(pool),
+    banking: new BankingService(pool),
+    outstanding: new OutstandingService(pool),
+    gst: new GstService(pool),
+    reports: new ReportsService(pool),
     receipts: new ReceiptsService(pool),
+    payroll: new PayrollService(pool),
+    labour: new LabourService(pool),
+    inventory: new InventoryService(pool),
+    tickets: new TicketsService(pool),
+    visits: new VisitsService(pool),
+    warranty: new WarrantyService(pool),
+    kb: new KnowledgeBaseService(pool),
+    ticketBilling: new TicketBillingService(pool),
+    supportDashboard: new SupportDashboardService(pool),
+    notifications: new NotificationsService(pool),
   };
   return g.__csd;
 }

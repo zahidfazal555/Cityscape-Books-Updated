@@ -46,3 +46,21 @@ export const ACCOUNT_FOR_MODE: Readonly<Record<PaymentMode, '1000' | '1010' | '1
   cheque: '1010',
   upi: '1020',
 };
+
+/** Inventory (FR-18) material groups, from the purchase trackers. */
+export const MATERIAL_CATEGORIES = [
+  'Board',
+  'Laminate',
+  'Wood',
+  'Hardware',
+  'Paint',
+  'Glass',
+  'Stone',
+  'Tiles',
+  'Metal',
+  'Cladding',
+  'Electrical',
+  'Plumbing',
+  'Other',
+] as const;
+export type MaterialCategory = (typeof MATERIAL_CATEGORIES)[number];
