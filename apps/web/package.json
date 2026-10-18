@@ -15,6 +15,8 @@
     "@csd/core": "workspace:*",
     "@csd/db": "workspace:*",
     "@csd/services": "workspace:*",
+    "@react-pdf/renderer": "4.9.0",
+    "fflate": "0.8.3",
     "next": "16.3.8",
     "nodemailer": "10.0.14",
     "pg": "^8.23.1",

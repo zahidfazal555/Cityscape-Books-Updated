@@ -9,6 +9,7 @@ import { rupees } from '@/lib/format';
 import { getSession } from '@/lib/session';
 import { services } from '@/lib/server';
 import { MatchBox, OpeningBalance } from './banking-actions';
+import { pdfHref } from '@/lib/documents';
 
 export default async function BankingPage({
   searchParams,
@@ -27,6 +28,7 @@ export default async function BankingPage({
     ...(range.from ? { from: range.from } : {}),
     ...(range.to ? { to: range.to } : {}),
   });
+  const exportHref = `/api/v1/banking/accounts/${code}/export${keep.size ? `?${keep.toString()}` : ''}`;
   const [cards, register, staff] = await Promise.all([
     services().banking.accounts(actor),
     services().banking.register(actor, code, range),
@@ -40,11 +42,8 @@ export default async function BankingPage({
         subtitle="Registers straight from the books. Tick each line once it appears on the statement."
         action={
           <div className="flex gap-2">
-            <DownloadLink
-              href={`/api/v1/banking/accounts/${code}/export${keep.size ? `?${keep.toString()}` : ''}`}
-            >
-              Export CSV
-            </DownloadLink>
+            <DownloadLink href={exportHref}>Export CSV</DownloadLink>
+            <DownloadLink href={pdfHref(exportHref)}>PDF</DownloadLink>
             {actor.role === 'owner' ? (
               <OpeningBalance code={code} name={cards.find((c) => c.code === code)?.name ?? code} />
             ) : null}

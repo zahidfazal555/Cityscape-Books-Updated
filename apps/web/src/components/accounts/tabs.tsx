@@ -44,3 +44,17 @@ export function DownloadLink({ href, children }: { href: string; children: strin
     </a>
   );
 }
+
+/** A small inline "PDF" link in a table row or under a document (opens the download). */
+export function PdfLink({ href, children = 'PDF' }: { href: string; children?: string }) {
+  return (
+    <a
+      href={href}
+      data-noprint
+      className="text-[12px] font-medium text-primary hover:underline"
+      title="Download PDF"
+    >
+      {children}
+    </a>
+  );
+}

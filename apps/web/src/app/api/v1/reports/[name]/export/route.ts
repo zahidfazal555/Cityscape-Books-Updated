@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import { CATEGORY_LABEL, COST_CATEGORIES, toDecimalString } from '@csd/core';
+import { CATEGORY_LABEL, COST_CATEGORIES, formatDate, toDecimalString, todayIn } from '@csd/core';
 import type { Actor } from '@csd/core';
-import { csvResponse } from '@/lib/csv-response';
+import { exportFormat, exportResponse } from '@/lib/export-response';
 import { api } from '@/lib/http';
 import { input } from '@/lib/schemas';
 import { services } from '@/lib/server';
@@ -9,6 +9,12 @@ import { services } from '@/lib/server';
 const NAMES = ['income-expense', 'pnl', 'category', 'trial-balance'] as const;
 type Name = (typeof NAMES)[number];
 const d = toDecimalString;
+const TITLE: Record<Name, string> = {
+  'income-expense': 'Project income & expenses',
+  pnl: 'Project profit & loss',
+  category: 'Spend by category',
+  'trial-balance': 'Trial balance',
+};
 
 async function rowsFor(actor: Actor, name: Name, asOf?: string): Promise<(string | number)[][]> {
   const r = services().reports;
@@ -66,13 +72,14 @@ async function rowsFor(actor: Actor, name: Name, asOf?: string): Promise<(string
   ];
 }
 
-/** "Export this report (CSV)" (FR-16.4), audited (H4). */
-const query = z.object({ asOf: z.string().optional() });
+/** "Export this report" as CSV (FR-16.4) or PDF (Tech Spec §11), audited (H4). */
+const query = z.object({ asOf: z.string().optional() }).merge(exportFormat);
 
 export const GET = api<{ name: string }>(async ({ actor, params, req }) => {
   const name = input(z.enum(NAMES), params.name);
-  const { asOf } = input(query, Object.fromEntries(req.nextUrl.searchParams));
+  const { asOf, format } = input(query, Object.fromEntries(req.nextUrl.searchParams));
   const rows = await rowsFor(actor, name, asOf);
-  await services().reports.recordExport(actor, name, rows.length - 1);
-  return csvResponse(`report-${name}`, rows);
+  await services().reports.recordExport(actor, name, rows.length - 1, format);
+  const subtitle = name === 'trial-balance' ? `As on ${formatDate(asOf ?? todayIn())}` : undefined;
+  return exportResponse(actor, format, `report-${name}`, { title: TITLE[name], subtitle }, rows);
 });

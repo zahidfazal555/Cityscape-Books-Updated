@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import type { PoDetail } from '@csd/services';
+import { DownloadLink } from '@/components/accounts/tabs';
 import { Button } from '@/components/ui';
 import { BillDrawer } from '@/components/purchases/bill-drawer';
 import { useAction } from '@/components/sales/use-action';
@@ -43,8 +44,9 @@ export function PoActions({
   return (
     <div className="flex flex-col items-end gap-2">
       <div className="flex flex-wrap justify-end gap-2">
+        <DownloadLink href={`/api/v1/purchase-orders/${po.id}/pdf`}>Download PDF</DownloadLink>
         <Button variant="ghost" onClick={() => window.print()}>
-          Print / PDF
+          Print
         </Button>
         {po.status === 'draft' && rights.full ? (
           <Button variant="ghost" onClick={remove} disabled={busy}>

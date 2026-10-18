@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { formatDate, isPtMonth } from '@csd/core';
+import { DownloadLink, PdfLink } from '@/components/accounts/tabs';
 import { EmptyState } from '@/components/ui';
 import { PrintButton } from '@/components/payroll/print-button';
 import { rupees } from '@/lib/format';
@@ -26,7 +27,14 @@ export default async function PayslipsPage({ params }: { params: Promise<{ id: s
         <Link href="/payroll" className="text-[13px] text-primary">
           ← Payroll
         </Link>
-        {approved ? <PrintButton /> : null}
+        {approved ? (
+          <div className="flex gap-2">
+            <DownloadLink href={`/api/v1/payroll/runs/${run.id}/pdf`}>
+              Download all (PDF)
+            </DownloadLink>
+            <PrintButton />
+          </div>
+        ) : null}
       </div>
       {approved ? null : (
         <p className="rounded-md border border-warn-line bg-warn-bg px-3 py-2 text-[13px] text-warn">
@@ -54,9 +62,16 @@ export default async function PayslipsPage({ params }: { params: Promise<{ id: s
               {approved ? 'Paid' : 'Pay date'} {formatDate(run.payDate)} · {MODE_LABEL[run.mode]}
             </div>
           </header>
-          <div className="mb-5">
-            <div className="text-[15px] font-semibold">{l.name}</div>
-            <div className="text-muted">{l.roleTitle}</div>
+          <div className="mb-5 flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[15px] font-semibold">{l.name}</div>
+              <div className="text-muted">{l.roleTitle}</div>
+            </div>
+            {approved ? (
+              <PdfLink href={`/api/v1/payroll/runs/${run.id}/pdf?employee=${l.employeeId}`}>
+                Payslip PDF
+              </PdfLink>
+            ) : null}
           </div>
           <dl className="grid grid-cols-[1fr_auto] gap-y-2">
             <dt>Gross salary</dt>

@@ -1,7 +1,8 @@
 import Link from 'next/link';
 import { can, canApprove, formatDate } from '@csd/core';
 import { Pill } from '@/components/kit';
-import { A4Document, placeOfSupply } from '@/components/sales/a4-document';
+import { A4Document } from '@/components/sales/a4-document';
+import { quoteSpec } from '@/lib/documents';
 import { rupees } from '@/lib/format';
 import { loadOr404 } from '@/lib/not-found';
 import { PROFORMA_STATUS, QUOTE_STATUS } from '@/lib/sales';
@@ -61,45 +62,7 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
           cannot be sent until then.
         </p>
       ) : null}
-      <A4Document
-        title={q.revision > 0 ? `QUOTATION · R${q.revision}` : 'QUOTATION'}
-        number={q.number}
-        letterhead={letterhead}
-        billTo={{
-          name: q.clientName,
-          gstin: q.clientGstin,
-          address: q.clientAddress,
-        }}
-        meta={[
-          ['Quote date', formatDate(q.quoteDate)],
-          ['Valid till', formatDate(q.validTill)],
-          ['Place of supply', placeOfSupply(q.placeOfSupply)],
-          ['Proposal', q.title],
-          ...(q.site ? ([['Site', q.site]] as [string, string][]) : []),
-        ]}
-        lines={q.lines.map((l, i) => ({ ...l, amount: q.totals.lines[i]?.amount ?? 0 }))}
-        totals={q.totals}
-        discountPct={q.discountPct}
-        interState={q.totals.interState}
-        showBank={false}
-        watermark={
-          q.status === 'draft'
-            ? q.discountPct > 0 && !q.discountApproved
-              ? 'DRAFT · discount not approved'
-              : 'DRAFT · not sent'
-            : undefined
-        }
-        footer={
-          q.terms ? (
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-[.05em] text-muted">
-                Terms
-              </div>
-              <p className="whitespace-pre-line">{q.terms}</p>
-            </div>
-          ) : null
-        }
-      />
+      <A4Document spec={quoteSpec(q)} letterhead={letterhead} />
       <section data-noprint className="grid gap-4 md:grid-cols-2">
         <div className="rounded-lg border border-line bg-white p-4 text-[13px]">
           <h2 className="mb-2 font-semibold">Linked documents</h2>

@@ -16,7 +16,7 @@ import {
 } from '@csd/core';
 import { withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
-import { tenantOf as ctx } from './validation.js';
+import { tenantOf as ctx, type ExportFormat } from './validation.js';
 
 export interface ProjectFigures {
   projectId: string;
@@ -175,8 +175,13 @@ export class ReportsService {
     });
   }
 
-  /** H4: a CSV export of any report writes an audit row (the report's own rights apply first). */
-  async recordExport(actor: Actor, report: ReportName, rows: number): Promise<void> {
+  /** H4: a CSV or PDF export of any report writes an audit row (the report's own rights apply first). */
+  async recordExport(
+    actor: Actor,
+    report: ReportName,
+    rows: number,
+    format: ExportFormat = 'csv',
+  ): Promise<void> {
     // BUG-131: the caller's right to the report is checked here too, not only by the route.
     authorize(actor, EXPORT_MODULE[report], 'view');
     await withTenant(this.pool, ctx(actor), (c) =>
@@ -184,7 +189,7 @@ export class ReportsService {
         action: 'export',
         entity: 'report',
         entityId: null,
-        after: { format: 'csv', report, rows },
+        after: { format, report, rows },
       }),
     );
   }

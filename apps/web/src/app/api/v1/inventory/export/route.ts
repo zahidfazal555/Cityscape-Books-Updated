@@ -1,17 +1,19 @@
 import { z } from 'zod';
 import { toDecimalString } from '@csd/core';
-import { csvResponse } from '@/lib/csv-response';
+import { exportFormat, exportResponse } from '@/lib/export-response';
 import { api } from '@/lib/http';
 import { input } from '@/lib/schemas';
 import { services } from '@/lib/server';
 
 const query = z.object({ projectId: z.string().uuid().optional() });
 
-/** "Export CSV" (FR-18.2); the service writes the audit row (H4). */
+/** "Export CSV" / PDF (FR-18.2); the service writes the audit row (H4). */
 export const GET = api(async ({ actor, req }) => {
-  const q = input(query, Object.fromEntries(req.nextUrl.searchParams));
-  const rows = await services().inventory.export(actor, q);
-  return csvResponse('material-purchases', [
+  const params = Object.fromEntries(req.nextUrl.searchParams);
+  const q = input(query, params);
+  const { format } = input(exportFormat, params);
+  const rows = await services().inventory.export(actor, q, format);
+  return exportResponse(actor, format, 'material-purchases', { title: 'Material purchases' }, [
     ['Date', 'Project', 'Item', 'Category', 'Quantity', 'Unit', 'Amount', 'Average rate', 'Vendor'],
     ...rows.map((m) => [
       m.purchaseDate,

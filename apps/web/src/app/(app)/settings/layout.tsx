@@ -4,6 +4,7 @@ import { getSession } from '@/lib/session';
 import { SettingsTabs } from './tabs';
 
 const TABS = [
+  { href: '/settings/company', label: 'Company', ownerOnly: true },
   { href: '/settings/users', label: 'Users & access', ownerOnly: true },
   { href: '/settings/roles', label: 'Role templates', ownerOnly: true },
   { href: '/settings/security', label: 'Security', ownerOnly: true },
@@ -21,7 +22,8 @@ export default async function SettingsLayout({ children }: { children: ReactNode
     <div>
       <h1 className="mb-1 text-[22px] font-semibold">Users &amp; security</h1>
       <p className="mb-4 text-[13px] text-muted">
-        Who can sign in, what each person can do, the books lock date and the audit trail.
+        Company details, who can sign in, what each person can do, the books lock date and the audit
+        trail.
       </p>
       <SettingsTabs tabs={TABS.filter((t) => owner || !t.ownerOnly)} />
       {children}

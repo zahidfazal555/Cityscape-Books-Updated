@@ -21,6 +21,7 @@ import {
   GstService,
   OutstandingService,
   ReportsService,
+  AccountantExportService,
   AuthService,
   ContactsService,
   ExpensesService,
@@ -68,6 +69,7 @@ export interface Services {
   outstanding: OutstandingService;
   gst: GstService;
   reports: ReportsService;
+  accountantExport: AccountantExportService;
   payroll: PayrollService;
   labour: LabourService;
   inventory: InventoryService;
@@ -139,6 +141,7 @@ export function services(): Services {
     outstanding: new OutstandingService(pool),
     gst: new GstService(pool),
     reports: new ReportsService(pool),
+    accountantExport: new AccountantExportService(pool),
     receipts: new ReceiptsService(pool),
     payroll: new PayrollService(pool),
     labour: new LabourService(pool),

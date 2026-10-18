@@ -19,6 +19,7 @@ import { Cards } from '@/components/sales/filter-chips';
 import { selectCls, useAction, type ProjectOption } from '@/components/sales/use-action';
 import { apiFetch, newIdempotencyKey } from '@/lib/client';
 import { rupees } from '@/lib/format';
+import { pdfHref } from '@/lib/documents';
 
 /** README §15 / FR-18.2: filter by project, category cards, purchase table, record and export. */
 export function InventoryView({
@@ -48,6 +49,7 @@ export function InventoryView({
         action={
           <div className="flex gap-2">
             <DownloadLink href={`/api/v1/inventory/export${query}`}>Export CSV</DownloadLink>
+            <DownloadLink href={pdfHref(`/api/v1/inventory/export${query}`)}>PDF</DownloadLink>
             {rights.edit ? (
               <Button onClick={() => setAdding(true)}>+ Record purchase</Button>
             ) : null}

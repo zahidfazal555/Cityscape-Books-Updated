@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { todayIn } from '@csd/core';
 import type { ProformaDetail } from '@csd/services';
+import { DownloadLink } from '@/components/accounts/tabs';
 import { Button, Field, FormError, Input } from '@/components/ui';
 import { Drawer } from '@/components/kit';
 import { ReceiptDrawer } from '@/components/sales/receipt-drawer';
@@ -40,8 +41,9 @@ export function ProformaActions({
   return (
     <div className="flex flex-col items-end gap-2">
       <div className="flex flex-wrap justify-end gap-2">
+        <DownloadLink href={`/api/v1/proformas/${pf.id}/pdf`}>Download PDF</DownloadLink>
         <Button variant="ghost" onClick={() => window.print()}>
-          Print / PDF
+          Print
         </Button>
         {live && noAdvances && rights.full ? (
           <Button variant="ghost" onClick={cancel} disabled={busy}>

@@ -1,8 +1,8 @@
-import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { toDecimalString } from '@csd/core';
+import { exportFormat, exportResponse } from '@/lib/export-response';
 import { api } from '@/lib/http';
-import { INVOICE_STATUS, toCsv } from '@/lib/sales';
+import { INVOICE_STATUS } from '@/lib/sales';
 import { input } from '@/lib/schemas';
 import { services } from '@/lib/server';
 
@@ -10,11 +10,14 @@ const query = z.object({
   status: z.enum(['unpaid', 'partially_paid', 'paid', 'overdue', 'cancelled']).optional(),
 });
 
-/** CSV of the invoice list (README §5). The service writes the export's audit row (H4). */
+/** CSV or PDF of the invoice list (README §5). The service writes the export's audit row (H4). */
 export const GET = api(async ({ actor, req }) => {
-  const q = input(query, Object.fromEntries(req.nextUrl.searchParams));
-  const invoices = await services().invoices.export(actor, { status: q.status });
-  const csv = toCsv([
+  const params = Object.fromEntries(req.nextUrl.searchParams);
+  const q = input(query, params);
+  const { format } = input(exportFormat, params);
+  const invoices = await services().invoices.export(actor, { status: q.status }, format);
+  const title = q.status ? `Tax invoices · ${INVOICE_STATUS[q.status].label}` : 'Tax invoices';
+  return exportResponse(actor, format, 'tax-invoices', { title }, [
     ['Number', 'Date', 'Due', 'Client', 'Project', 'Tax type', 'Total', 'Balance due', 'Status'],
     ...invoices.map((i) => [
       i.number,
@@ -28,10 +31,4 @@ export const GET = api(async ({ actor, req }) => {
       INVOICE_STATUS[i.status].label,
     ]),
   ]);
-  return new NextResponse(csv, {
-    headers: {
-      'content-type': 'text/csv; charset=utf-8',
-      'content-disposition': 'attachment; filename="tax-invoices.csv"',
-    },
-  });
 });

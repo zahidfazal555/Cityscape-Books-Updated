@@ -12,6 +12,7 @@ import { EmptyState } from '@/components/ui';
 import { rupees } from '@/lib/format';
 import { getSession } from '@/lib/session';
 import { services } from '@/lib/server';
+import { pdfHref } from '@/lib/documents';
 
 const BUCKET_COLOUR: Record<AgeingBucket, string> = {
   current: '#1e7a4c',
@@ -42,7 +43,12 @@ export default async function OutstandingPage({
       <PageHeader
         title="Outstanding"
         subtitle={`As on ${formatDate(data.asOf)}. Tax invoices and posted bills only: proformas and pending entries are not outstanding.`}
-        action={<DownloadLink href={`/api/v1/outstanding/${side}/export`}>Export CSV</DownloadLink>}
+        action={
+          <div className="flex gap-2">
+            <DownloadLink href={`/api/v1/outstanding/${side}/export`}>Export CSV</DownloadLink>
+            <DownloadLink href={pdfHref(`/api/v1/outstanding/${side}/export`)}>PDF</DownloadLink>
+          </div>
+        }
       />
       <LinkTabs
         value={side}

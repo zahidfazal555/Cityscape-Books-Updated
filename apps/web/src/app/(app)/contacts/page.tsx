@@ -23,6 +23,7 @@ export default async function ContactsPage({
       contacts={contacts}
       canEdit={can(actor, 'contacts', 'edit')}
       canArchive={can(actor, 'contacts', 'full')}
+      canStatement={type === 'client' && can(actor, 'outstanding', 'view')}
     />
   );
 }

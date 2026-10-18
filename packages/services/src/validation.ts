@@ -42,6 +42,9 @@ export function likeLiteral(text: string): string {
 }
 
 /** Form fields often arrive as '' for "not given": treat them as null before validating. */
+/** How a list or report leaves the app; recorded on the export's audit row (H4). */
+export type ExportFormat = 'csv' | 'pdf';
+
 export function blankToNull(value: unknown): unknown {
   return typeof value === 'string' && value.trim() === '' ? null : value;
 }

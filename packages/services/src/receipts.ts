@@ -63,6 +63,60 @@ export interface Receipt {
   receivedBy: string | null;
 }
 
+export interface ReceiptDetail extends Receipt {
+  clientGstin: string | null;
+  clientAddress: string | null;
+  projectName: string;
+}
+
+interface ReceiptRow {
+  id: string;
+  number: string;
+  receipt_date: string;
+  client_name: string;
+  client_gstin: string | null;
+  client_address: string | null;
+  project_id: string;
+  project_code: string;
+  project_name: string;
+  invoice_number: string | null;
+  proforma_number: string | null;
+  applied: boolean;
+  amount: string;
+  mode: ReceiptMode;
+  reference: string | null;
+  received_by: string | null;
+}
+
+const RECEIPT_SELECT = `
+  SELECT r.id, r.number, to_char(r.receipt_date, 'YYYY-MM-DD') AS receipt_date, k.name AS client_name,
+         k.gstin AS client_gstin, k.address AS client_address, r.project_id,
+         p.code AS project_code, p.name AS project_name,
+         (SELECT string_agg(i.number, ', ') FROM receipt_allocation a JOIN invoice i ON i.id = a.invoice_id
+           WHERE a.receipt_id = r.id) AS invoice_number,
+         (SELECT string_agg(f.number, ', ') FROM receipt_allocation a JOIN proforma f ON f.id = a.proforma_id
+           WHERE a.receipt_id = r.id) AS proforma_number,
+         EXISTS (SELECT 1 FROM receipt_allocation a WHERE a.receipt_id = r.id AND a.applied_at IS NOT NULL)
+           AS applied,
+         r.amount::text, r.mode, r.reference, r.received_by
+    FROM receipt r JOIN contact k ON k.id = r.client_id JOIN project p ON p.id = r.project_id`;
+
+const toReceipt = (r: ReceiptRow): Receipt => ({
+  id: r.id,
+  number: r.number,
+  receiptDate: r.receipt_date,
+  clientName: r.client_name,
+  projectId: r.project_id,
+  projectCode: r.project_code,
+  invoiceNumber: r.invoice_number,
+  proformaNumber: r.proforma_number,
+  applied: r.applied,
+  amount: fromDecimalString(r.amount),
+  mode: r.mode,
+  reference: r.reference,
+  receivedBy: r.received_by,
+});
+
 /**
  * Client receipts (Req §6): against an open invoice or, as an advance, an open proforma;
  * amount ≤ balance; reference unless cash.
@@ -72,53 +126,36 @@ export class ReceiptsService {
 
   async list(actor: Actor, filter: { projectId?: string | undefined } = {}): Promise<Receipt[]> {
     authorize(actor, 'receipts', 'view');
-    const scope = projectScope(actor);
     return withTenant(this.pool, ctx(actor), async (c) => {
-      const { rows } = await c.query<{
-        id: string;
-        number: string;
-        receipt_date: string;
-        client_name: string;
-        project_id: string;
-        project_code: string;
-        invoice_number: string | null;
-        proforma_number: string | null;
-        applied: boolean;
-        amount: string;
-        mode: ReceiptMode;
-        reference: string | null;
-        received_by: string | null;
-      }>(
-        `SELECT r.id, r.number, to_char(r.receipt_date, 'YYYY-MM-DD') AS receipt_date, k.name AS client_name, r.project_id,
-                p.code AS project_code,
-                (SELECT string_agg(i.number, ', ') FROM receipt_allocation a JOIN invoice i ON i.id = a.invoice_id
-                  WHERE a.receipt_id = r.id) AS invoice_number,
-                (SELECT string_agg(f.number, ', ') FROM receipt_allocation a JOIN proforma f ON f.id = a.proforma_id
-                  WHERE a.receipt_id = r.id) AS proforma_number,
-                EXISTS (SELECT 1 FROM receipt_allocation a WHERE a.receipt_id = r.id AND a.applied_at IS NOT NULL)
-                  AS applied,
-                r.amount::text, r.mode, r.reference, r.received_by
-           FROM receipt r JOIN contact k ON k.id = r.client_id JOIN project p ON p.id = r.project_id
+      const { rows } = await c.query<ReceiptRow>(
+        `${RECEIPT_SELECT}
           WHERE r.deleted_at IS NULL AND ($1::uuid[] IS NULL OR r.project_id = ANY($1::uuid[]))
             AND ($2::uuid IS NULL OR r.project_id = $2)
           ORDER BY r.receipt_date DESC, r.number DESC LIMIT 500`,
-        [scope, filter.projectId ?? null],
+        [projectScope(actor), filter.projectId ?? null],
       );
-      return rows.map((r) => ({
-        id: r.id,
-        number: r.number,
-        receiptDate: r.receipt_date,
-        clientName: r.client_name,
-        projectId: r.project_id,
-        projectCode: r.project_code,
-        invoiceNumber: r.invoice_number,
-        proformaNumber: r.proforma_number,
-        applied: r.applied,
-        amount: fromDecimalString(r.amount),
-        mode: r.mode,
-        reference: r.reference,
-        receivedBy: r.received_by,
-      }));
+      return rows.map(toReceipt);
+    });
+  }
+
+  /** One receipt for its printed copy; outside the caller's projects it does not exist (404). */
+  async get(actor: Actor, id: string): Promise<ReceiptDetail> {
+    authorize(actor, 'receipts', 'view');
+    assertId(id, 'Receipt');
+    return withTenant(this.pool, ctx(actor), async (c) => {
+      const { rows } = await c.query<ReceiptRow>(
+        `${RECEIPT_SELECT}
+          WHERE r.id = $1 AND r.deleted_at IS NULL AND ($2::uuid[] IS NULL OR r.project_id = ANY($2::uuid[]))`,
+        [id, projectScope(actor)],
+      );
+      const r = rows[0];
+      if (!r) throw new DomainError('NOT_FOUND', 'Receipt not found.');
+      return {
+        ...toReceipt(r),
+        clientGstin: r.client_gstin,
+        clientAddress: r.client_address,
+        projectName: r.project_name,
+      };
     });
   }
 

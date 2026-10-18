@@ -3,6 +3,20 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
 
 ## [Unreleased]
 ### Added
+- Settings → Company (`PATCH /api/v1/settings`, owner-only): edit the name, legal name, GSTIN,
+  state, address, phone, email and bank details printed on every document. The GSTIN must match
+  the state; every change is audited with the bank account masked.
+- PDF downloads (FR-3.4.5, Tech Spec §11), generated on the server with IBM Plex (OFL, bundled):
+  tax invoices, credit notes, quotations, proformas, purchase orders, client receipts, purchase
+  bills, payslips (whole run or one employee) and a client statement of account (FY to date). Every
+  list and report export takes `?format=pdf` next to CSV. Drafts and cancelled documents carry a
+  watermark on every page; every PDF download writes an audit row (H4).
+- Final documents (invoice, credit note, quotation, proforma, PO, receipt, statement, approved
+  payslip) carry the company mark as a very light watermark, on screen and in the PDF.
+- Reports → Export for accountant (`GET /api/v1/reports/accountant-export?from&to`, owner and
+  auditor, all projects): one ZIP of UTF-8 CSV files for the period: day book, trial balance,
+  sales invoices, credit notes, receipts, purchase bills, vendor payments, expenses, payroll (with
+  the payroll right) and the chart of accounts, plus a README. Audited (H4).
 - Engineering standards, runbooks, contribution rules, PR template and security policy.
 - Spec fixes v1.4 (accounting corrections A1–A8, schema fixes B1–B10, business rules C1–C2).
 - Quotations with revisions and owner-approved discounts; proforma invoices with customer advances,
@@ -44,6 +58,9 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
   any cost is posted.
 
 ### Changed
+- Document pages print from the same data as their PDF (`lib/documents.ts`); a cancelled invoice now
+  shows a CANCELLED watermark. "Print / PDF" became "Download PDF" + "Print".
+- Expenses CSV: the header listed "Paid to" twice, shifting Amount and Status one column right.
 - H2 approvals are keyed to the Owner role: granting `approvals = full` to another user no longer
   lets their entries post directly or lets them approve.
 - Uploaded photos are decoded with sharp off the event loop, and an image declaring more than 50 MP

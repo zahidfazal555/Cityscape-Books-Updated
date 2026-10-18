@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { CATEGORY_LABEL, COST_CATEGORIES, formatDate, type Paise } from '@csd/core';
 import type { Expense, ExpenseFilter } from '@csd/services';
+import { DownloadLink } from '@/components/accounts/tabs';
 import { Button, EmptyState, FormError } from '@/components/ui';
 import { Drawer, PageHeader, Pill, Row, Table } from '@/components/kit';
 import { ExpenseForm } from '@/components/purchases/expense-form';
@@ -12,6 +13,7 @@ import { selectCls, useAction, type ProjectOption } from '@/components/sales/use
 import { apiFetch } from '@/lib/client';
 import { rupees } from '@/lib/format';
 import { APPROVAL_STATUS, CATEGORY_DOT, EXPENSE_MODE_LABEL } from '@/lib/purchases';
+import { pdfHref } from '@/lib/documents';
 
 interface Rights {
   edit: boolean;
@@ -82,12 +84,10 @@ export function ExpensesView({
         subtitle="Site spends with bill photos. Entries by anyone but the owner wait for approval."
         action={
           <div className="flex gap-2" data-noprint>
-            <a
-              href={`/api/v1/expenses/export${query(filter)}`}
-              className="inline-flex h-9 items-center rounded-md border border-input bg-white px-4 text-[13.5px] font-medium text-primary hover:bg-thead"
-            >
-              Export CSV
-            </a>
+            <DownloadLink href={`/api/v1/expenses/export${query(filter)}`}>Export CSV</DownloadLink>
+            <DownloadLink href={pdfHref(`/api/v1/expenses/export${query(filter)}`)}>
+              PDF
+            </DownloadLink>
             {rights.edit ? (
               <Button onClick={() => setOpen({ kind: 'new' })}>+ Add expense</Button>
             ) : null}

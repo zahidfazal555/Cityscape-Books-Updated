@@ -16,6 +16,7 @@ import type { GstMonth } from '@csd/services';
 import { rupees } from '@/lib/format';
 import { getSession } from '@/lib/session';
 import { services } from '@/lib/server';
+import { pdfHref } from '@/lib/documents';
 
 const MONTH = new Intl.DateTimeFormat('en-IN', {
   month: 'short',
@@ -101,6 +102,7 @@ export default async function GstPage({
               </span>
             )}
             <DownloadLink href={`/api/v1/gst/${period}/export`}>CSV</DownloadLink>
+            <DownloadLink href={pdfHref(`/api/v1/gst/${period}/export`)}>PDF</DownloadLink>
           </div>
         }
       />

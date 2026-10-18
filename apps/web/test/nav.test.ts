@@ -17,11 +17,13 @@ const labels = (role: Role) =>
 describe('navigation follows rights (FR-3.4.1)', () => {
   it('owner sees everything including Users & security', () => {
     expect(labels('owner')).toContain('Users & security');
+    expect(labels('owner')).toContain('Company details');
     expect(labels('owner')).toContain('Approvals');
   });
   it('admin and PM never see Users & security or Approvals; PM has no banking or payroll', () => {
     for (const role of ['admin', 'manager'] as const) {
       expect(labels(role)).not.toContain('Users & security');
+      expect(labels(role)).not.toContain('Company details');
       expect(labels(role)).not.toContain('Approvals');
     }
     expect(labels('manager')).not.toContain('Cash, bank & UPI');

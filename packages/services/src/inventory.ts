@@ -18,7 +18,7 @@ import {
 import { withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import { z } from 'zod';
-import { companyRow, isoDate, parse, tenantOf as ctx } from './validation.js';
+import { companyRow, isoDate, parse, tenantOf as ctx, type ExportFormat } from './validation.js';
 
 const purchaseSchema = z.object({
   projectId: z.string().uuid('Choose a project.'),
@@ -145,10 +145,11 @@ export class InventoryService {
     });
   }
 
-  /** Every match for a CSV download; H4: the export writes an audit row. */
+  /** Every match for a CSV or PDF download; H4: the export writes an audit row. */
   async export(
     actor: Actor,
     filter: { projectId?: string | undefined } = {},
+    format: ExportFormat = 'csv',
   ): Promise<MaterialPurchase[]> {
     authorize(actor, 'inventory', 'view', filter.projectId);
     if (filter.projectId) assertId(filter.projectId, 'Project');
@@ -163,7 +164,7 @@ export class InventoryService {
         action: 'export',
         entity: 'material_purchase',
         entityId: null,
-        after: { format: 'csv', filter, rows: rows.length },
+        after: { format, filter, rows: rows.length },
       });
       return rows.map(toPurchase);
     });

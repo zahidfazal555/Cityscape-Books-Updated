@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { can, formatDate } from '@csd/core';
 import { Pill } from '@/components/kit';
 import { A4Document } from '@/components/sales/a4-document';
+import { poSpec } from '@/lib/documents';
 import { rupees } from '@/lib/format';
 import { loadOr404 } from '@/lib/not-found';
 import { PO_STATUS } from '@/lib/purchases';
@@ -40,32 +41,7 @@ export default async function PoPage({ params }: { params: Promise<{ id: string 
           }}
         />
       </div>
-      {letterhead ? (
-        <A4Document
-          title="PURCHASE ORDER"
-          number={po.number}
-          letterhead={letterhead}
-          partyLabel="Vendor"
-          billTo={{ name: po.vendorName, gstin: po.vendorGstin }}
-          meta={[
-            ['PO date', formatDate(po.poDate)],
-            ['Deliver by', po.deliverBy ? formatDate(po.deliverBy) : '—'],
-            ['Deliver to', po.projectCode],
-          ]}
-          lines={po.lines.map((l, i) => ({ ...l, amount: po.totals.lines[i]?.amount ?? 0 }))}
-          totals={po.totals}
-          interState={po.totals.interState}
-          showBank={false}
-          watermark={
-            po.status === 'draft'
-              ? 'DRAFT · not issued'
-              : po.status === 'cancelled'
-                ? 'CANCELLED'
-                : undefined
-          }
-          footer={po.terms ? <p className="whitespace-pre-line">{po.terms}</p> : null}
-        />
-      ) : null}
+      {letterhead ? <A4Document spec={poSpec(po)} letterhead={letterhead} /> : null}
       <section data-noprint className="rounded-lg border border-line bg-white p-4 text-[13px]">
         <h2 className="mb-2 font-semibold">Bills against this PO</h2>
         {po.bills.length === 0 ? <p className="text-muted">None yet.</p> : null}

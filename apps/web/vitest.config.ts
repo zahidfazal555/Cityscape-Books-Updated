@@ -9,5 +9,7 @@ export default defineConfig({
       'server-only': fileURLToPath(new URL('./test/server-only-stub.ts', import.meta.url)),
     },
   },
+  // tsconfig keeps JSX for Next ("preserve"); tests render the PDF templates themselves.
+  esbuild: { jsx: 'automatic' },
   test: { include: ['test/**/*.test.ts'] },
 });

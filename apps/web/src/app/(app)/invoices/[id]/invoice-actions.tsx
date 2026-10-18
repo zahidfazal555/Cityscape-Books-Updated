@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { todayIn } from '@csd/core';
 import type { InvoiceDetail } from '@csd/services';
+import { DownloadLink } from '@/components/accounts/tabs';
 import { Button, Field, FormError, Input } from '@/components/ui';
 import { Drawer } from '@/components/kit';
 import { ReceiptDrawer } from '@/components/sales/receipt-drawer';
@@ -33,8 +34,14 @@ export function InvoiceActions({
   };
   return (
     <div className="flex gap-2">
+      <DownloadLink href={`/api/v1/invoices/${invoice.id}/pdf`}>Download PDF</DownloadLink>
+      {invoice.creditNote ? (
+        <DownloadLink href={`/api/v1/invoices/${invoice.id}/credit-note/pdf`}>
+          Credit note PDF
+        </DownloadLink>
+      ) : null}
       <Button variant="ghost" onClick={() => window.print()}>
-        Print / PDF
+        Print
       </Button>
       {canCancel && invoice.cancellable ? (
         <Button variant="ghost" onClick={() => setOpen('cancel')}>

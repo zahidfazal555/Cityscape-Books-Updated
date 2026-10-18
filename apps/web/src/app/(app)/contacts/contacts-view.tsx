@@ -15,12 +15,15 @@ export function ContactsView({
   contacts,
   canEdit,
   canArchive,
+  canStatement,
 }: {
   type: ContactType;
   q: string;
   contacts: Contact[];
   canEdit: boolean;
   canArchive: boolean;
+  /** A client's statement of account (PDF), for users who can see outstanding. */
+  canStatement: boolean;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState<Contact | 'new' | null>(null);
@@ -110,7 +113,16 @@ export function ContactsView({
               <span className="num text-right">
                 {type === 'client' ? c.projectCount : (c.pan ?? '—')}
               </span>
-              <span className="flex justify-end gap-1.5">
+              <span className="flex items-center justify-end gap-1.5">
+                {canStatement ? (
+                  <a
+                    href={`/api/v1/contacts/${c.id}/statement/pdf`}
+                    title="Statement of account, this financial year to date (PDF)"
+                    className="inline-flex h-[26px] items-center rounded-md border border-input bg-white px-2 text-xs font-medium text-primary hover:bg-thead"
+                  >
+                    Statement
+                  </a>
+                ) : null}
                 {canEdit ? (
                   <Button
                     variant="ghost"

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { formatDate } from '@csd/core';
 import type { InvoiceSummary } from '@csd/services';
+import { DownloadLink } from '@/components/accounts/tabs';
 import { Button, EmptyState } from '@/components/ui';
 import { PageHeader, Pill, Row, Table } from '@/components/kit';
 import { Cards, FilterChips } from '@/components/sales/filter-chips';
@@ -12,6 +13,7 @@ import type { ProjectOption } from '@/components/sales/use-action';
 import { rupees } from '@/lib/format';
 import { INVOICE_STATUS } from '@/lib/sales';
 import { InvoiceDrawer } from './invoice-drawer';
+import { pdfHref } from '@/lib/documents';
 
 const FILTERS = [
   ['all', 'All'],
@@ -38,6 +40,7 @@ export function InvoicesView({
   const router = useRouter();
   const [adding, setAdding] = useState(false);
   const live = invoices.filter((i) => i.status !== 'cancelled');
+  const exportHref = `/api/v1/invoices/export${filter === 'all' ? '' : `?status=${filter}`}`;
   const sum = (xs: InvoiceSummary[], k: 'total' | 'balance') => xs.reduce((s, i) => s + i[k], 0);
   return (
     <>
@@ -46,12 +49,8 @@ export function InvoicesView({
         subtitle="GST invoices CSD/FY/####. Cancelled with a credit note, never deleted."
         action={
           <div className="flex gap-2" data-noprint>
-            <a
-              href={`/api/v1/invoices/export${filter === 'all' ? '' : `?status=${filter}`}`}
-              className="inline-flex h-9 items-center rounded-md border border-input bg-white px-4 text-[13.5px] font-medium text-primary hover:bg-thead"
-            >
-              Export CSV
-            </a>
+            <DownloadLink href={exportHref}>Export CSV</DownloadLink>
+            <DownloadLink href={pdfHref(exportHref)}>PDF</DownloadLink>
             {canEdit ? <Button onClick={() => setAdding(true)}>+ New invoice</Button> : null}
           </div>
         }

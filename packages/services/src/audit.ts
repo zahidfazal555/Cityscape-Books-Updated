@@ -1,5 +1,5 @@
-import { DomainError, projectScope, stripPnl, type Actor } from '@csd/core';
-import { withTenant } from '@csd/db';
+import { DomainError, authorize, projectScope, stripPnl, type Actor, type Module } from '@csd/core';
+import { withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import { tenantOf } from './validation.js';
 
@@ -75,5 +75,24 @@ export class AuditService {
         })),
       );
     });
+  }
+
+  /**
+   * H4: a document downloaded as PDF writes an audit row. The caller has read the document through
+   * its own service (project scope checked there); the module right is checked again here.
+   */
+  async recordDocumentPdf(
+    actor: Actor,
+    doc: { module: Module; entity: string; entityId: string; number: string },
+  ): Promise<void> {
+    authorize(actor, doc.module, 'view');
+    await withTenant(this.pool, tenantOf(actor), (c) =>
+      writeAudit(c, {
+        action: 'export',
+        entity: doc.entity,
+        entityId: doc.entityId,
+        after: { format: 'pdf', number: doc.number },
+      }),
+    );
   }
 }

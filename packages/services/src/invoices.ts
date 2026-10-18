@@ -36,6 +36,7 @@ import {
   pick,
   tenantOf as ctx,
   type CompanyRow,
+  type ExportFormat,
 } from './validation.js';
 
 export const lineSchema = z.object({
@@ -375,7 +376,11 @@ export class InvoicesService {
    * Every matching invoice for a CSV download. ENGINEERING-STANDARDS H4: an export writes an
    * audit row (who, what filter, how many rows) in the same transaction as the read.
    */
-  async export(actor: Actor, filter: InvoiceFilter = {}): Promise<InvoiceSummary[]> {
+  async export(
+    actor: Actor,
+    filter: InvoiceFilter = {},
+    format: ExportFormat = 'csv',
+  ): Promise<InvoiceSummary[]> {
     authorize(actor, 'invoices', 'view');
     return withTenant(this.pool, ctx(actor), async (c) => {
       const rows = await listRows(c, actor, filter, 50_000);
@@ -383,7 +388,7 @@ export class InvoicesService {
         action: 'export',
         entity: 'invoice',
         entityId: null,
-        after: { format: 'csv', filter, rows: rows.length },
+        after: { format, filter, rows: rows.length },
       });
       return rows;
     });

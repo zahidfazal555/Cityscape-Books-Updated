@@ -6,6 +6,7 @@ import { formatDate } from '@csd/core';
 import type { Paise } from '@csd/core';
 import type { Receipt, ReceiptMode } from '@csd/services';
 import { Button, EmptyState, FormError } from '@/components/ui';
+import { PdfLink } from '@/components/accounts/tabs';
 import { PageHeader, Row, Table } from '@/components/kit';
 import { ReceiptDrawer, type ReceiptTarget } from '@/components/sales/receipt-drawer';
 import { useAction } from '@/components/sales/use-action';
@@ -76,7 +77,10 @@ export function ReceiptsView({
           </Row>
           {receipts.map((r) => (
             <Row key={r.id}>
-              <span className="font-mono text-[12px]">{r.number}</span>
+              <span className="flex flex-wrap items-baseline gap-x-2">
+                <span className="font-mono text-[12px]">{r.number}</span>
+                <PdfLink href={`/api/v1/receipts/${r.id}/pdf`} />
+              </span>
               <span className="text-muted">{formatDate(r.receiptDate)}</span>
               <span className="min-w-0">
                 <span className="block truncate">{r.clientName}</span>

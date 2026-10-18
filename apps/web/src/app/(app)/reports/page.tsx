@@ -2,6 +2,7 @@ import {
   CATEGORY_LABEL,
   COST_CATEGORIES,
   can,
+  financialYearStart,
   formatDate,
   parseIsoDate,
   projectScope,
@@ -15,6 +16,8 @@ import { EmptyState } from '@/components/ui';
 import { rupees } from '@/lib/format';
 import { getSession } from '@/lib/session';
 import { services } from '@/lib/server';
+import { pdfHref } from '@/lib/documents';
+import { AccountantExport } from './accountant-export';
 
 type Tab = 'income-expense' | 'pnl' | 'category' | 'trial-balance';
 
@@ -197,28 +200,34 @@ export default async function ReportsPage({
 }: {
   searchParams: Promise<{ tab?: string; asOf?: string }>;
 }) {
-  const { actor } = await getSession();
+  const { actor, company } = await getSession();
   if (!can(actor, 'reports', 'view'))
     return <EmptyState>You do not have access to reports.</EmptyState>;
   const tabs = tabsFor(actor);
   const sp = await searchParams;
   const tab = tabs.find((t) => t.value === sp.tab)?.value ?? 'income-expense';
   const asOf = validDate(sp.asOf) ?? todayIn();
+  const exportHref = `/api/v1/reports/${tab}/export${tab === 'trial-balance' ? `?asOf=${asOf}` : ''}`;
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Reports"
         subtitle="From the books: approved entries only."
         action={
-          <DownloadLink
-            href={`/api/v1/reports/${tab}/export${tab === 'trial-balance' ? `?asOf=${asOf}` : ''}`}
-          >
-            Export this report (CSV)
-          </DownloadLink>
+          <div className="flex gap-2">
+            <DownloadLink href={exportHref}>Export this report (CSV)</DownloadLink>
+            <DownloadLink href={pdfHref(exportHref)}>PDF</DownloadLink>
+          </div>
         }
       />
       <LinkTabs value={tab} items={tabs} />
       {await body(actor, tab, asOf)}
+      {can(actor, 'pnl', 'view') && projectScope(actor) === null ? (
+        <AccountantExport
+          from={financialYearStart(todayIn(), company.fyStartMonth)}
+          to={todayIn()}
+        />
+      ) : null}
     </div>
   );
 }

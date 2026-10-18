@@ -4,8 +4,10 @@ const config: NextConfig = {
   // Workspace packages ship TypeScript source.
   transpilePackages: ['@csd/core', '@csd/db', '@csd/services'],
   // Native and Node-only modules stay out of the bundle.
-  serverExternalPackages: ['pg', '@node-rs/argon2', 'nodemailer', 'sharp'],
+  serverExternalPackages: ['pg', '@node-rs/argon2', 'nodemailer', 'sharp', '@react-pdf/renderer'],
   poweredByHeader: false,
+  // Don't write AGENTS.md / CLAUDE.md into apps/web on `next dev`.
+  agentRules: false,
   // Workspace packages use NodeNext-style `./x.js` imports of `.ts` files.
   webpack(cfg, { isServer }) {
     cfg.resolve ??= {};

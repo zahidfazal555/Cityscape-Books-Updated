@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { addDays, parseRupees, percentOf, todayIn } from '@csd/core';
 import type { QuoteDetail } from '@csd/services';
+import { DownloadLink } from '@/components/accounts/tabs';
 import { Button, Field, FormError, Input } from '@/components/ui';
 import { Chips, Drawer } from '@/components/kit';
 import { useAction } from '@/components/sales/use-action';
@@ -65,8 +66,9 @@ export function QuoteActions({
   return (
     <div className="flex flex-col items-end gap-2">
       <div className="flex flex-wrap justify-end gap-2">
+        <DownloadLink href={`/api/v1/quotations/${quote.id}/pdf`}>Download PDF</DownloadLink>
         <Button variant="ghost" onClick={() => window.print()}>
-          Print / PDF
+          Print
         </Button>
         {buttons.map((b) => (
           <Button

@@ -25,7 +25,7 @@ import { z } from 'zod';
 import { claimAttachment } from './attachments.js';
 import { notifyBudget } from './budget-alerts.js';
 import { assertLiveProject } from './purchase-orders.js';
-import { companyRow, isoDate, parse, tenantOf as ctx } from './validation.js';
+import { companyRow, isoDate, parse, tenantOf as ctx, type ExportFormat } from './validation.js';
 
 export const EXPENSE_MODES = ['upi', 'cash', 'bank'] as const;
 export type ExpenseMode = (typeof EXPENSE_MODES)[number];
@@ -204,7 +204,11 @@ export class ExpensesService {
   }
 
   /** Every match for a CSV download; H4: the export writes an audit row. */
-  async export(actor: Actor, filter: ExpenseFilter = {}): Promise<Expense[]> {
+  async export(
+    actor: Actor,
+    filter: ExpenseFilter = {},
+    format: ExportFormat = 'csv',
+  ): Promise<Expense[]> {
     authorize(actor, 'expenses', 'view');
     return withTenant(this.pool, ctx(actor), async (c) => {
       const { rows } = await c.query<Row>(
@@ -221,7 +225,7 @@ export class ExpensesService {
         action: 'export',
         entity: 'expense',
         entityId: null,
-        after: { format: 'csv', filter, rows: rows.length },
+        after: { format, filter, rows: rows.length },
       });
       return rows.map(toExpense);
     });

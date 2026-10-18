@@ -69,6 +69,7 @@ const GROUPS: NavGroup[] = [
   {
     label: 'Admin',
     items: [
+      { label: 'Company details', href: '/settings/company', module: 'owner', ready: true },
       { label: 'Users & security', href: '/settings/users', module: 'owner', ready: true },
       { label: 'Audit trail', href: '/settings/audit', module: 'auditTrail', ready: true },
     ],

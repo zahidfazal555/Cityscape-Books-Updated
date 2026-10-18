@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { CATEGORY_LABEL, formatDate } from '@csd/core';
 import type { BillDetail, BillSummary } from '@csd/services';
 import { Button, EmptyState, FormError } from '@/components/ui';
+import { PdfLink } from '@/components/accounts/tabs';
 import { PageHeader, Pill, Row, Table } from '@/components/kit';
 import { BillDrawer, type VendorOption } from '@/components/purchases/bill-drawer';
 import { PayDrawer } from '@/components/purchases/pay-drawer';
@@ -100,7 +101,10 @@ export function BillsView({
           </Row>
           {bills.map((b) => (
             <Row key={b.id}>
-              <span className="font-mono text-[12px]">{b.billNo}</span>
+              <span className="flex flex-wrap items-baseline gap-x-2">
+                <span className="font-mono text-[12px]">{b.billNo}</span>
+                <PdfLink href={`/api/v1/bills/${b.id}/pdf`} />
+              </span>
               <span className="min-w-0">
                 <span className="block truncate">{b.vendorName}</span>
                 <span className="block truncate text-xs text-muted">
