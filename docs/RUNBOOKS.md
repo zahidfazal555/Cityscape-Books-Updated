@@ -46,6 +46,9 @@ For a personal-data breach: also follow the DPDP notification duty (timeline to 
 ## 6. Quarterly restore drill
 Restore the latest nightly dump into staging, then run `pnpm verify:books` (trial balance, row counts, checksum of the invoice series). Record the duration below. A failed drill counts as an S2 incident.
 
+## 6a. Scheduled jobs
+See docs/GO-LIVE.md §5: `pnpm jobs sla-sweep` (every 15 min), `pnpm jobs verify-books` (nightly; exit code 1 is an S2), `pnpm jobs retention` (weekly). A missed run shows as no new `sla` notifications or no nightly verify log line; check the host's cron log first.
+
 ## 7. Third-party processors
 | Service | Purpose | Region | DPA |
 |---|---|---|---|

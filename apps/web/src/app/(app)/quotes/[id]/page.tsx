@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { can, formatDate } from '@csd/core';
+import { can, canApprove, formatDate } from '@csd/core';
 import { Pill } from '@/components/kit';
 import { A4Document, placeOfSupply } from '@/components/sales/a4-document';
 import { rupees } from '@/lib/format';
@@ -38,7 +38,8 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
           rights={{
             edit: canEdit,
             full: can(actor, 'quotes', 'full', scope),
-            approve: can(actor, 'approvals', 'full'),
+            // Only the Owner approves (BUG-191): `approvals: full` alone does not.
+            approve: canApprove(actor),
             proforma: q.projectId !== null && can(actor, 'proformas', 'edit', q.projectId),
             invoice: q.projectId !== null && can(actor, 'invoices', 'edit', q.projectId),
             projects: can(actor, 'projects', 'edit'),
