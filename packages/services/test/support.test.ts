@@ -388,7 +388,9 @@ describe('review regressions (PR 16)', () => {
       engineerId: site.userId,
     });
     const { expenseId } = await completeWithCost(id);
-    await expenses.approve(owner, expenseId!);
+    await expenses.approve(owner, expenseId!, {
+      version: (await expenses.get(owner, expenseId!)).version,
+    });
     expect((await expenses.get(owner, expenseId!)).status).toBe('approved');
   });
 

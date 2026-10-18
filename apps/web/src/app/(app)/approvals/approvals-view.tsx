@@ -42,7 +42,7 @@ export function ApprovalsView({
       () =>
         apiFetch<{ failed: { id: string; message: string }[] }>('/api/v1/expenses/approve-bulk', {
           method: 'POST',
-          body: { ids: approvable.map((e) => e.id) },
+          body: { items: approvable.map((e) => ({ id: e.id, version: e.version })) },
         }),
       (r) => {
         const failed = (r as { failed: { message: string }[] }).failed;
@@ -99,7 +99,12 @@ export function ApprovalsView({
                 locked={isLocked(e.txnDate, lockDate)}
                 onPhoto={() => setPhoto(e)}
                 onApprove={() =>
-                  run(() => apiFetch(`/api/v1/expenses/${e.id}/approve`, { method: 'POST' }))
+                  run(() =>
+                    apiFetch(`/api/v1/expenses/${e.id}/approve`, {
+                      method: 'POST',
+                      body: { version: e.version },
+                    }),
+                  )
                 }
                 onReject={() => reject(`/api/v1/expenses/${e.id}/reject`)}
               />
@@ -171,7 +176,10 @@ export function ApprovalsView({
                     disabled={busy}
                     onClick={() =>
                       run(() =>
-                        apiFetch(`/api/v1/quotations/${q.id}/approve-discount`, { method: 'POST' }),
+                        apiFetch(`/api/v1/quotations/${q.id}/approve-discount`, {
+                          method: 'POST',
+                          body: { version: q.version },
+                        }),
                       )
                     }
                   >

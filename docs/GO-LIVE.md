@@ -50,10 +50,12 @@ Build images from a clean checkout. `.dockerignore` keeps `.env*`, keys and dump
 docker build -t cityscape-books:vX.Y.Z .            # CI builds this on every PR
 # behind a TLS-inspecting proxy: docker build --secret id=ca,src=ca.pem …
 docker run --rm --env-file prod.env cityscape-books:vX.Y.Z pnpm --filter @csd/db migrate   # expand-only migrations
-docker run -d --env-file prod.env -v photos:/data/attachments -p 3000:3000 cityscape-books:vX.Y.Z
+docker run -d --env-file prod.env -v photos:/data/attachments -p 127.0.0.1:3000:3000 cityscape-books:vX.Y.Z
 ```
 - The health check is `GET /api/health`.
 - Put HTTPS (TLS 1.2+) in front of the container. The app sends HSTS and a strict CSP.
+- Publish the port on `127.0.0.1` (or a private network) only, never `-p 3000:3000`. Docker's port rules bypass the host firewall. A client reaching port 3000 directly could fake `X-Forwarded-For`, which evades the sign-in rate limits and the new-IP sign-in alert.
+- The proxy must **append** the client address to `X-Forwarded-For` (nginx `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`; Caddy does this by default). `TRUSTED_PROXIES` is the number of such proxies; the app refuses to start in production with `0`.
 - Every production deploy follows RUNBOOKS §4, the release checklist:
   - a backup snapshot first;
   - not on the 18th–20th, or in the last 2 days of the month;

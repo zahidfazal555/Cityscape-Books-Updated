@@ -29,7 +29,10 @@ ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PNPM_HOME=/pnpm PATH=/pnpm:$PA
 COPY --from=deps --chown=node:node /corepack /corepack
 RUN corepack enable && mkdir -p /data/attachments && chown node:node /data/attachments
 WORKDIR /app
-COPY --from=build --chown=node:node /app /app
+# The code is owned by root, so the app process cannot rewrite its own bundles; only Next's cache
+# directory and the photo volume are writable (BUG-187).
+COPY --from=build /app /app
+RUN mkdir -p apps/web/.next/cache && chown node:node apps/web/.next/cache
 USER node
 # Bill and site photos live here; mount a persistent, backed-up volume (RUNBOOKS "Bill photos").
 ENV ATTACHMENT_DIR=/data/attachments

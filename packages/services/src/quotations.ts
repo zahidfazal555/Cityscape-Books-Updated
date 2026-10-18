@@ -49,6 +49,7 @@ const quoteSchema = z.object({
   terms: z.string().trim().max(4000).nullable().optional(),
 });
 const updateSchema = quoteSchema.extend({ version: z.number().int().positive() });
+const approveSchema = z.object({ version: z.number().int().positive() });
 const acceptSchema = z.object({
   /** Link to an existing project of the same client (FR-5.7) instead of creating one. */
   projectId: z.string().uuid().optional(),
@@ -85,6 +86,8 @@ export interface QuoteSummary {
   projectCode: string | null;
   taxable: Paise;
   total: Paise;
+  /** Sent back with an approval, so the Owner approves exactly what they saw (BUG-184). */
+  version: number;
 }
 
 export interface QuoteRevision {
@@ -96,7 +99,6 @@ export interface QuoteRevision {
 }
 
 export interface QuoteDetail extends QuoteSummary {
-  version: number;
   /** The client's GSTIN and address as they stand now, for the printed bill-to. */
   clientGstin: string | null;
   clientAddress: string | null;
@@ -117,7 +119,7 @@ const WITH_STATUS = `
          to_char(q.quote_date, 'YYYY-MM-DD') AS quote_date, to_char(q.valid_till, 'YYYY-MM-DD') AS valid_till,
          CASE WHEN q.status = 'sent' AND q.valid_till < $1::date THEN 'expired' ELSE q.status END AS status,
          q.discount_pct::text, q.discount_approved, q.project_id, p.code AS project_code,
-         q.taxable::text, q.total::text
+         q.taxable::text, q.total::text, q.version
     FROM quotation q JOIN contact k ON k.id = q.client_id LEFT JOIN project p ON p.id = q.project_id`;
 
 interface SummaryRow {
@@ -136,6 +138,7 @@ interface SummaryRow {
   project_code: string | null;
   taxable: string;
   total: string;
+  version: number;
 }
 
 const toSummary = (r: SummaryRow): QuoteSummary => ({
@@ -154,6 +157,7 @@ const toSummary = (r: SummaryRow): QuoteSummary => ({
   projectCode: r.project_code,
   taxable: fromDecimalString(r.taxable),
   total: fromDecimalString(r.total),
+  version: r.version,
 });
 
 /**
@@ -307,13 +311,39 @@ export class QuotationsService {
   }
 
   /** ENGINEERING-STANDARDS H2: the owner (approvals = full) approves a discount before sending. */
-  async approveDiscount(actor: Actor, id: string): Promise<void> {
+  /**
+   * The Owner approves the discount of the version they saw: if the quote was edited since, it
+   * is refused and the queue reloads (BUG-184).
+   */
+  async approveDiscount(
+    actor: Actor,
+    id: string,
+    input: z.input<typeof approveSchema>,
+  ): Promise<void> {
     assertId(id, 'Quotation');
+    const { version } = parse(approveSchema, input);
     assertApprover(actor);
     await this.transition(actor, id, 'approve_discount', (q) => {
       if (q.status !== 'draft' || q.discountApproved)
         throw new DomainError('CONFLICT', 'This quotation has no discount waiting for approval.');
+      assertVersion(q, version);
       return 'discount_approved = true';
+    });
+  }
+
+  /** The Owner's Discounts queue: every draft waiting, oldest first, never cut off (BUG-192). */
+  async pendingDiscounts(actor: Actor): Promise<QuoteSummary[]> {
+    assertApprover(actor);
+    const scope = projectScope(actor);
+    return withTenant(this.pool, ctx(actor), async (c) => {
+      const { rows } = await c.query<SummaryRow>(
+        `SELECT * FROM (${WITH_STATUS}) s
+          WHERE ($2::uuid[] IS NULL OR s.project_id IS NULL OR s.project_id = ANY($2::uuid[]))
+            AND s.status = 'draft' AND s.discount_pct::numeric > 0 AND NOT s.discount_approved
+          ORDER BY s.quote_date, s.number`,
+        [todayIn(), scope],
+      );
+      return rows.map(toSummary);
     });
   }
 

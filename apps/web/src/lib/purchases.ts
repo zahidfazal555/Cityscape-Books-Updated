@@ -42,7 +42,7 @@ export const PAID_BY = ['Saravanan', 'Shiva', 'Admin', 'Site Engineer'] as const
 
 export const EXPENSE_MODE_LABEL = { upi: 'UPI', cash: 'Cash', bank: 'Bank' } as const;
 
-export const GST_CHIPS = ['0', '5', '12', '18', '28'] as const;
+export const GST_CHIPS = ['0', '5', '12', '18', '28', '40'] as const;
 
 /** Notice shown to everyone but the Owner (H2). */
 export const OWNER_APPROVAL_NOTE =

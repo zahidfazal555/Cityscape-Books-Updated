@@ -258,6 +258,27 @@ export function trustedIp(forwardedFor: string | null, trusted: number): string 
   return parseIp(hops[hops.length - trusted] ?? '');
 }
 
+/**
+ * The per-IP rate-limit key. An IPv6 client usually controls a whole /64, so IPv6 addresses are
+ * keyed by that prefix (BUG-185); IPv4-mapped IPv6 counts as the IPv4 address.
+ */
+export function ipKey(ip: string | null): string {
+  if (!ip) return 'ip:unknown';
+  if (isIP(ip) !== 6) return `ip:${ip}`;
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+  if (mapped?.[1]) return `ip:${mapped[1]}`;
+  const [head = '', tail = ''] = ip.toLowerCase().split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const groups = ip.includes('::')
+    ? [...left, ...Array<string>(8 - left.length - right.length).fill('0'), ...right]
+    : left;
+  return `ip6:${groups
+    .slice(0, 4)
+    .map((g) => g.replace(/^0+(?=.)/, ''))
+    .join(':')}::/64`;
+}
+
 export function clientInfo(req: NextRequest): ClientInfo {
   return {
     ip: trustedIp(req.headers.get('x-forwarded-for'), env().TRUSTED_PROXIES),

@@ -41,3 +41,15 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
 ### Changed
 - H2 approvals are keyed to the Owner role: granting `approvals = full` to another user no longer
   lets their entries post directly or lets them approve.
+- Uploaded photos are decoded with sharp off the event loop, and an image declaring more than 50 MP
+  is refused from its header.
+- Approving an expense or a quote discount names the version the Owner saw; an entry changed since
+  is refused.
+- The 40% GST slab (from 22 Sep 2025) is accepted on documents, purchase orders and bills.
+- Production refuses `TRUSTED_PROXIES=0`; publish the app port on 127.0.0.1 behind the HTTPS proxy.
+
+### Security
+- Final whole-codebase review (BUG-183–197): change-password lockout race, IPv6 rate-limit keys,
+  Postgres error details kept out of logs, root-owned image code, pinned third-party CI action,
+  lock-date share lock, no DELETE for the app role on sessions/masters/accounts/allocations,
+  company-scoped foreign keys, rate-change audit rows, proforma lock checks.
