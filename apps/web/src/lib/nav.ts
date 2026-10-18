@@ -54,9 +54,9 @@ const GROUPS: NavGroup[] = [
   {
     label: 'Support',
     items: [
-      { label: 'Tickets', href: '/tickets', module: 'tickets', ready: false },
-      { label: 'Warranty register', href: '/warranty', module: 'warranty', ready: false },
-      { label: 'Knowledge base', href: '/kb', module: 'kb', ready: false },
+      { label: 'Tickets', href: '/tickets', module: 'tickets', ready: true },
+      { label: 'Warranty register', href: '/warranty', module: 'warranty', ready: true },
+      { label: 'Knowledge base', href: '/kb', module: 'kb', ready: true },
     ],
   },
   {

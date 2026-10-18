@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { DomainError, assertId, authorize, can, canApprove, type Actor } from '@csd/core';
+import { DomainError, assertId, can, canApprove, type Actor } from '@csd/core';
 import { withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import type { BlobStore } from './blob-store.js';
@@ -20,11 +20,13 @@ export class AttachmentsService {
 
   /** Stores a JPEG, PNG or PDF (≤ 10 MB, type sniffed, photo metadata removed). */
   async upload(actor: Actor, raw: Buffer): Promise<{ id: string; contentType: AllowedType }> {
-    authorize(actor, 'expenses', 'edit');
+    // Bill photos need expenses edit; visit photos need tickets edit or a visit assigned to the
+    // uploader (BUG-170), checked below inside the transaction.
+    const byRight = can(actor, 'expenses', 'edit') || can(actor, 'tickets', 'edit');
     if (raw.byteLength === 0) throw new DomainError('VALIDATION', 'The file is empty.', 'file');
     if (raw.byteLength > MAX_UPLOAD_BYTES)
       throw new DomainError('TOO_LARGE', 'The file is larger than 10 MB.');
-    const clean = cleanUpload(raw);
+    const clean = await cleanUpload(raw);
     if (!clean)
       throw new DomainError('VALIDATION', 'Upload a photo (JPEG or PNG) or a PDF.', 'file');
     const id = randomUUID();
@@ -32,6 +34,7 @@ export class AttachmentsService {
     // Row and file together: the file is written inside the transaction, so a failed insert
     // leaves no file and a failed write leaves no row (BUG-106).
     await withTenant(this.pool, ctx(actor), async (c) => {
+      if (!byRight) await assertHasVisit(c);
       await assertUnclaimedQuota(c);
       await c.query(
         `INSERT INTO attachment (id, company_id, storage_key, thumbnail_key, content_type, size_bytes, sha256,
@@ -90,32 +93,55 @@ interface AttachmentRow {
   content_type: AllowedType;
   uploaded_by: string;
   project_id: string | null;
+  /** Set when the photo belongs to a site visit (before/after). */
+  visit_project_id: string | null;
+  visit_engineer_id: string | null;
 }
 
-/** Linked photos follow the expense's project scope; unattached ones are the uploader's. */
+/**
+ * Linked photos follow the expense's project scope, visit photos the ticket's project (or the
+ * visit's engineer); unattached ones are the uploader's.
+ */
 async function visibleAttachment(
   c: pg.PoolClient,
   actor: Actor,
   id: string,
 ): Promise<AttachmentRow> {
   const { rows } = await c.query<AttachmentRow>(
-    `SELECT a.storage_key, a.thumbnail_key, a.content_type, a.uploaded_by, e.project_id
+    `SELECT a.storage_key, a.thumbnail_key, a.content_type, a.uploaded_by, e.project_id,
+            t.project_id AS visit_project_id, sv.engineer_id AS visit_engineer_id
        FROM attachment a LEFT JOIN expense e ON e.attachment_id = a.id AND e.deleted_at IS NULL
+       LEFT JOIN visit_photo vp ON vp.attachment_id = a.id
+       LEFT JOIN site_visit sv ON sv.id = vp.visit_id
+       LEFT JOIN ticket t ON t.id = sv.ticket_id
       WHERE a.id = $1`,
     [id],
   );
   const r = rows[0];
-  const allowed =
-    r !== undefined &&
-    (r.project_id === null
-      ? r.uploaded_by === actor.userId
-      : can(actor, 'expenses', 'view', r.project_id));
+  const allowed = r !== undefined && mayView(actor, r);
   if (!r || !allowed) throw new DomainError('NOT_FOUND', 'File not found.');
   return r;
 }
 
+function mayView(actor: Actor, r: AttachmentRow): boolean {
+  if (r.visit_project_id !== null)
+    return (
+      r.visit_engineer_id === actor.userId || can(actor, 'tickets', 'view', r.visit_project_id)
+    );
+  if (r.project_id !== null) return can(actor, 'expenses', 'view', r.project_id);
+  return r.uploaded_by === actor.userId;
+}
+
+async function assertHasVisit(c: pg.PoolClient): Promise<void> {
+  const { rows } = await c.query(
+    `SELECT 1 FROM site_visit WHERE engineer_id = app_user_id() AND status = 'scheduled' LIMIT 1`,
+  );
+  if (rows.length === 0) throw new DomainError('FORBIDDEN', 'You do not have access to this.');
+}
+
 /** Photos uploaded but not attached to an expense yet, per user (bounds disk use; BUG-106). */
-export const MAX_UNCLAIMED_UPLOADS = 20;
+// A service visit takes up to 10 before + 10 after + 1 bill photo before it is saved (BUG-167).
+export const MAX_UNCLAIMED_UPLOADS = 30;
 
 async function assertUnclaimedQuota(c: pg.PoolClient): Promise<void> {
   // One upload per user at a time, so concurrent uploads cannot all slip under the quota.
@@ -123,7 +149,8 @@ async function assertUnclaimedQuota(c: pg.PoolClient): Promise<void> {
   const { rows } = await c.query<{ n: string }>(
     `SELECT count(*)::text AS n FROM attachment a
       WHERE a.uploaded_by = app_user_id() AND a.created_at > now() - interval '7 days'
-        AND NOT EXISTS (SELECT 1 FROM expense e WHERE e.attachment_id = a.id)`,
+        AND NOT EXISTS (SELECT 1 FROM expense e WHERE e.attachment_id = a.id)
+        AND NOT EXISTS (SELECT 1 FROM visit_photo vp WHERE vp.attachment_id = a.id)`,
   );
   if (Number(rows[0]?.n ?? 0) >= MAX_UNCLAIMED_UPLOADS) {
     throw new DomainError(
@@ -145,7 +172,9 @@ export async function claimAttachment(
   author: string | null = null,
 ): Promise<void> {
   const { rows } = await c.query<{ uploaded_by: string; used_by: string | null }>(
-    `SELECT a.uploaded_by, (SELECT e.id FROM expense e WHERE e.attachment_id = a.id) AS used_by
+    `SELECT a.uploaded_by,
+            coalesce((SELECT e.id FROM expense e WHERE e.attachment_id = a.id),
+                     (SELECT vp.visit_id FROM visit_photo vp WHERE vp.attachment_id = a.id)) AS used_by
        FROM attachment a WHERE a.id = $1`,
     [attachmentId],
   );

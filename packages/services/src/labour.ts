@@ -515,10 +515,13 @@ export class LabourService {
     authorize(actor, 'payroll', 'view');
     return withTenant(this.pool, ctx(actor), async (c) => {
       const target = kind === 'wage' ? 'x.employee_id' : 'x.job_id';
+      // The approval queue reads the oldest first, so a long queue never hides the oldest (BUG-192).
+      const order =
+        filter.status === 'pending' ? 'x.created_at ASC' : 'x.pay_date DESC, x.created_at DESC';
       const { rows } = await c.query<PaymentRow>(
         `${PAYMENT_SELECT[kind]} AND ($1::uuid[] IS NULL OR x.project_id = ANY($1::uuid[]))
            AND ($2::uuid IS NULL OR ${target} = $2) AND ($3::text IS NULL OR x.status = $3)
-         ORDER BY x.pay_date DESC, x.created_at DESC LIMIT 500`,
+         ORDER BY ${order} LIMIT 500`,
         [projectScope(actor), filter.targetId ?? null, filter.status ?? null],
       );
       return rows.filter((r) => can(actor, 'payroll', 'view', r.project_id)).map(toPayment(kind));

@@ -276,6 +276,8 @@ export class ProformasService {
       const pf = await this.load(c, actor, id, true);
       authorize(actor, 'proformas', 'edit', pf.projectId);
       if (pf.status !== 'draft') throw new DomainError('CONFLICT', 'Only a draft can be sent.');
+      // FR-3.3.1: nothing dated in a locked period changes, status included (BUG-193).
+      assertNotLocked(pf.pfDate, (await companyRow(c)).lock_date, 'pfDate');
       await c.query(
         `UPDATE proforma SET status = 'sent', version = version + 1, updated_by = app_user_id() WHERE id = $1`,
         [id],
@@ -292,6 +294,7 @@ export class ProformasService {
       const pf = await this.load(c, actor, id, true);
       authorize(actor, 'proformas', 'full', pf.projectId);
       assertChangeable(pf, 'cancelled');
+      assertNotLocked(pf.pfDate, (await companyRow(c)).lock_date, 'pfDate');
       await c.query(
         `UPDATE proforma SET status = 'cancelled', version = version + 1, updated_by = app_user_id() WHERE id = $1`,
         [id],
