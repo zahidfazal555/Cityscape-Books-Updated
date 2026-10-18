@@ -58,9 +58,14 @@ export function env(): Env {
 
 /** Settings that are only safe outside production are refused there (fail fast at start-up). */
 function assertProduction(e: Env): void {
+  const broken = configRules(e).find(([bad]) => bad);
+  if (broken) throw new Error(`Invalid configuration — ${broken[1]}`);
+}
+
+function configRules(e: Env): [boolean, string][] {
   const prod = e.NODE_ENV === 'production';
   const e2e = e.CSD_ALLOW_OUTBOX_IN_PRODUCTION === 'e2e';
-  const rules: [boolean, string][] = [
+  return [
     [
       prod && e.MAIL_MODE === 'outbox' && !e2e,
       'production needs a real mail provider (MAIL_MODE).',
@@ -74,7 +79,11 @@ function assertProduction(e: Env): void {
       'MAIL_MODE=smtp needs SMTP_URL and MAIL_FROM.',
     ],
     [prod && !e.ATTACHMENT_DIR, 'ATTACHMENT_DIR is required in production.'],
+    // Without a proxy every client shares one "unknown" rate-limit bucket, so one attacker could
+    // block sign-in for everyone (BUG-185).
+    [
+      prod && e.TRUSTED_PROXIES === 0 && !e2e,
+      'TRUSTED_PROXIES must be at least 1 in production: run the app behind the HTTPS proxy.',
+    ],
   ];
-  const broken = rules.find(([bad]) => bad);
-  if (broken) throw new Error(`Invalid configuration — ${broken[1]}`);
 }

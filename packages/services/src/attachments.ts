@@ -26,7 +26,7 @@ export class AttachmentsService {
     if (raw.byteLength === 0) throw new DomainError('VALIDATION', 'The file is empty.', 'file');
     if (raw.byteLength > MAX_UPLOAD_BYTES)
       throw new DomainError('TOO_LARGE', 'The file is larger than 10 MB.');
-    const clean = cleanUpload(raw);
+    const clean = await cleanUpload(raw);
     if (!clean)
       throw new DomainError('VALIDATION', 'Upload a photo (JPEG or PNG) or a PDF.', 'file');
     const id = randomUUID();

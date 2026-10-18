@@ -127,8 +127,8 @@ async function postings(sourceId: string): Promise<Record<string, number>> {
 }
 
 describe('bill photos', () => {
-  it('BUG-105: re-encodes images, dropping EXIF/GPS, comments, appended images and trailers', () => {
-    const jpg = cleanUpload(JPEG);
+  it('BUG-105: re-encodes images, dropping EXIF/GPS, comments, appended images and trailers', async () => {
+    const jpg = await cleanUpload(JPEG);
     expect(jpg?.type).toBe('image/jpeg');
     const text = jpg!.bytes.toString('latin1');
     for (const leak of ['GPS', 'Exif', 'secret comment', 'MotionPhoto'])
@@ -136,14 +136,29 @@ describe('bill photos', () => {
     // Exactly one image, and it still decodes to the same picture size.
     expect(text.split('\xff\xd8').length - 1).toBe(1);
     expect(jpeg.decode(jpg!.bytes)).toMatchObject({ width: 16, height: 8 });
-    const png = cleanUpload(PNG_WITH_TEXT);
+    const png = await cleanUpload(PNG_WITH_TEXT);
     expect(png?.type).toBe('image/png');
     expect(png!.bytes.toString('latin1')).not.toContain('Chennai');
     expect(PNG.sync.read(png!.bytes)).toMatchObject({ width: 4, height: 4 });
-    expect(cleanUpload(Buffer.from('%PDF-1.7 hello'))?.type).toBe('application/pdf');
-    expect(cleanUpload(Buffer.from('<svg onload=alert(1)>'))).toBeNull();
+    expect((await cleanUpload(Buffer.from('%PDF-1.7 hello')))?.type).toBe('application/pdf');
+    expect(await cleanUpload(Buffer.from('<svg onload=alert(1)>'))).toBeNull();
     // A file that only looks like a JPEG is refused rather than stored.
-    expect(cleanUpload(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 4, 1, 2]))).toBeNull();
+    expect(await cleanUpload(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 4, 1, 2]))).toBeNull();
+  });
+
+  it('BUG-183: a small file declaring a huge image is refused from its header, without decoding', async () => {
+    // The 4×4 PNG with its IHDR rewritten to 15000×15000: under 1 KB, 225 MP if decoded.
+    const bomb = Buffer.from(plainPng);
+    bomb.writeUInt32BE(15000, 16);
+    bomb.writeUInt32BE(15000, 20);
+    bomb.writeUInt32BE(crc32(bomb.subarray(12, 29)) >>> 0, 29);
+    const started = performance.now();
+    expect(await cleanUpload(bomb)).toBeNull();
+    expect(performance.now() - started).toBeLessThan(1000);
+    // A PNG body behind a JPEG signature (or the reverse) is refused too.
+    expect(
+      await cleanUpload(Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), plainPng])),
+    ).toBeNull();
   });
 
   it('upload refuses other types, empty and oversized files; stores the cleaned bytes', async () => {

@@ -15,15 +15,16 @@
     "@csd/db": "workspace:*",
     "@node-rs/argon2": "^2.2.2",
     "jose": "^6.2.12",
-    "jpeg-js": "0.4.4",
     "nodemailer": "10.0.14",
     "pg": "^8.23.1",
-    "pngjs": "7.0.0",
+    "sharp": "0.34.5",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/nodemailer": "8.0.2",
     "@types/pg": "^8.23.1",
-    "@types/pngjs": "6.0.5"
+    "@types/pngjs": "6.0.5",
+    "jpeg-js": "0.4.4",
+    "pngjs": "7.0.0"
   }
 }
