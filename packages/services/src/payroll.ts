@@ -391,6 +391,13 @@ export class PayrollService {
         `UPDATE rate_change SET status = 'approved', decided_by = app_user_id(), decided_at = now() WHERE id = $1`,
         [id],
       );
+      // The decision is traceable to the request itself, not only to the figure (BUG-190).
+      await writeAudit(c, {
+        action: 'approve',
+        entity: 'rate_change',
+        entityId: id,
+        after: { field: rc.field, oldValue: rc.oldValue, newValue: rc.newValue },
+      });
     });
   }
 
@@ -781,12 +788,19 @@ export async function supersedePending(
   column: 'employee_id' | 'contract_job_id',
   targetId: string,
 ): Promise<void> {
-  await c.query(
+  const { rows } = await c.query<{ id: string }>(
     `UPDATE rate_change SET status = 'rejected', reject_reason = 'Replaced by the owner''s change.',
             decided_by = app_user_id(), decided_at = now()
-      WHERE ${column} = $1 AND status = 'pending'`,
+      WHERE ${column} = $1 AND status = 'pending' RETURNING id`,
     [targetId],
   );
+  for (const r of rows)
+    await writeAudit(c, {
+      action: 'reject',
+      entity: 'rate_change',
+      entityId: r.id,
+      after: { reason: 'Replaced by the owner’s change.' },
+    });
 }
 
 export async function applyRate(

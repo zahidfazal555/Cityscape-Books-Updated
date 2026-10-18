@@ -211,8 +211,11 @@ export class AuthService {
   }
 
   /**
-   * Wrong current passwords count toward the lockout. Hashing and the breach check run
-   * outside any transaction. Success signs the user out everywhere.
+   * Wrong current passwords count toward the lockout. The check runs with the user row locked
+   * and the failure is recorded before the lock is released, so concurrent guesses are
+   * serialised and can never exceed the 5-failure limit, as at sign-in (BUG-189). The policy
+   * check and hashing of the new password run outside any transaction. Success signs the user
+   * out everywhere.
    */
   async changePassword(
     actor: Actor,
@@ -221,32 +224,14 @@ export class AuthService {
     client: ClientInfo,
   ): Promise<void> {
     const ctx = { companyId: actor.companyId, userId: actor.userId };
-    const u = await withTenant(this.deps.pool, ctx, async (c) => {
-      const { rows } = await c.query<{
-        email: string;
-        name: string;
-        password_hash: string | null;
-        locked: boolean;
-      }>(
-        `SELECT email, name, password_hash, coalesce(locked_until > now(), false) AS locked FROM app_user WHERE id = $1`,
-        [actor.userId],
-      );
-      return rows[0];
-    });
-    if (
-      !u?.password_hash ||
-      u.locked ||
-      !(await verifyPassword(u.password_hash, currentPassword))
-    ) {
-      if (u && !u.locked) {
-        const { rows } = await this.deps.pool.query<{ locked: boolean }>(
-          'SELECT auth_record_failure($1) AS locked',
-          [actor.userId],
-        );
-        await this.afterFailure(ctx, rows[0]?.locked ?? false, 'password_change', client);
-      }
+    const check = await withTenant(this.deps.pool, ctx, (c) =>
+      this.checkCurrentPassword(c, actor.userId, currentPassword),
+    );
+    if (!check.ok) {
+      if (check.failed) await this.afterFailure(ctx, check.locked, 'password_change', client);
       throw new DomainError('VALIDATION', 'Current password is incorrect.', 'currentPassword');
     }
+    const u = check.user;
     await assertPasswordPolicy(newPassword, u, this.deps.breach);
     const newHash = await hashPassword(newPassword);
     await withTenant(this.deps.pool, ctx, async (c) => {
@@ -264,6 +249,36 @@ export class AuthService {
         ip: client.ip,
       });
     });
+  }
+
+  private async checkCurrentPassword(
+    c: pg.PoolClient,
+    userId: string,
+    password: string,
+  ): Promise<
+    | { ok: true; user: { email: string; name: string; password_hash: string } }
+    | { ok: false; failed: boolean; locked: boolean }
+  > {
+    const { rows } = await c.query<{
+      email: string;
+      name: string;
+      password_hash: string | null;
+      locked: boolean;
+    }>(
+      `SELECT email, name, password_hash, coalesce(locked_until > now(), false) AS locked
+         FROM app_user WHERE id = $1 FOR UPDATE`,
+      [userId],
+    );
+    const u = rows[0];
+    if (!u || u.locked) return { ok: false, failed: false, locked: false };
+    if (u.password_hash && (await verifyPassword(u.password_hash, password))) {
+      await c.query('UPDATE app_user SET failed_attempts = 0 WHERE id = $1', [userId]);
+      return { ok: true, user: { ...u, password_hash: u.password_hash } };
+    }
+    const failure = await c.query<{ locked: boolean }>('SELECT auth_record_failure($1) AS locked', [
+      userId,
+    ]);
+    return { ok: false, failed: true, locked: failure.rows[0]?.locked ?? false };
   }
 
   /**

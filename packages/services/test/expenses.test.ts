@@ -114,6 +114,10 @@ const input = async (
   ...over,
 });
 
+/** The version the Owner sees in the queue (BUG-184). */
+const seen = async (id: string) => ({ version: (await expenses.get(owner, id)).version });
+const item = async (id: string) => ({ id, ...(await seen(id)) });
+
 async function postings(sourceId: string): Promise<Record<string, number>> {
   const { rows } = await superPool.query<{ code: string; net: string }>(
     `SELECT a.code, sum(l.debit - l.credit)::text AS net
@@ -213,10 +217,14 @@ describe('expenses (FR-11, H2)', () => {
     const e = await expenses.create(site, await input());
     expect(e.status).toBe('pending');
     expect(await postings(e.id)).toEqual({});
-    await expect(expenses.approve(manager, e.id)).rejects.toMatchObject({ code: 'FORBIDDEN' });
-    await expenses.approve(owner, e.id);
+    await expect(expenses.approve(manager, e.id, await seen(e.id))).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    await expenses.approve(owner, e.id, await seen(e.id));
     expect(await postings(e.id)).toEqual({ '5000': 2_450_00, '1020': -2_450_00 });
-    await expect(expenses.approve(owner, e.id)).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(expenses.approve(owner, e.id, await seen(e.id))).rejects.toMatchObject({
+      code: 'CONFLICT',
+    });
     const tb = await trialBalance(f.companyId);
     expect(tb.dr).toBe(tb.cr);
   });
@@ -244,7 +252,7 @@ describe('expenses (FR-11, H2)', () => {
 
   it('BUG-104: a non-owner cannot edit (and so un-post or then withdraw) an approved expense; the Owner reposts it', async () => {
     const e = await expenses.create(site, await input());
-    await expenses.approve(owner, e.id);
+    await expenses.approve(owner, e.id, await seen(e.id));
     let v = await expenses.get(owner, e.id);
     await expect(
       expenses.update(site, e.id, { ...(await input()), version: v.version }),
@@ -299,7 +307,9 @@ describe('expenses (FR-11, H2)', () => {
     await superPool.query(`UPDATE project SET status = 'cancelled' WHERE id = $1`, [
       other.projectId,
     ]);
-    await expect(expenses.approve(owner, p.id)).rejects.toMatchObject({ code: 'VALIDATION' });
+    await expect(expenses.approve(owner, p.id, await seen(p.id))).rejects.toMatchObject({
+      code: 'VALIDATION',
+    });
   });
 
   it('BUG-106/167: a user can hold a bounded number of unattached photos (enough for one visit)', async () => {
@@ -335,7 +345,9 @@ describe('expenses (FR-11, H2)', () => {
     const c = await expenses.create(site, await input({ txnDate: '2026-10-02' }));
     const posted = await expenses.create(owner, await input({ txnDate: '2026-10-02' }, owner));
     await setLock(f.companyId, '2026-10-03');
-    await expect(expenses.approve(owner, a.id)).rejects.toMatchObject({ code: 'PERIOD_LOCKED' });
+    await expect(expenses.approve(owner, a.id, await seen(a.id))).rejects.toMatchObject({
+      code: 'PERIOD_LOCKED',
+    });
     await expenses.reject(owner, a.id, { reason: 'Month closed' });
     // Never posted: the rejected one can still be cleared away by its author.
     await expenses.remove(site, a.id);
@@ -352,7 +364,7 @@ describe('expenses (FR-11, H2)', () => {
     await setLock(f.companyId, null);
     const d = await expenses.create(site, await input());
     await setLock(f.companyId, '2026-10-03');
-    const res = await expenses.approveMany(owner, { ids: [c.id, d.id] });
+    const res = await expenses.approveMany(owner, { items: [await item(c.id), await item(d.id)] });
     expect(res.approved).toEqual([d.id]);
     expect(res.failed.map((x) => x.id)).toEqual([c.id]);
   });
@@ -429,8 +441,27 @@ describe('review regressions (PR 11)', () => {
   });
 
   it('BUG-112: approve-all accepts as many ids as the queue shows', async () => {
-    const ids = Array.from({ length: 201 }, () => crypto.randomUUID());
-    const res = await expenses.approveMany(owner, { ids });
+    const items = Array.from({ length: 201 }, () => ({ id: crypto.randomUUID(), version: 1 }));
+    const res = await expenses.approveMany(owner, { items });
     expect(res.failed).toHaveLength(201);
+  });
+});
+
+describe('final review regressions', () => {
+  it('BUG-184: the Owner approves the amount they saw; an expense edited since is refused, alone or in bulk', async () => {
+    const e = await expenses.create(manager, await input({}, manager));
+    const shown = await seen(e.id);
+    const before = await expenses.get(manager, e.id);
+    await expenses.update(manager, e.id, {
+      ...(await input({ amount: 50_000_00 }, manager)),
+      version: before.version,
+    });
+    await expect(expenses.approve(owner, e.id, shown)).rejects.toMatchObject({ code: 'CONFLICT' });
+    const bulk = await expenses.approveMany(owner, { items: [{ id: e.id, ...shown }] });
+    expect(bulk.approved).toEqual([]);
+    expect(await postings(e.id)).toEqual({});
+    // Approving the version now on screen posts the new amount.
+    await expenses.approve(owner, e.id, await seen(e.id));
+    expect(await postings(e.id)).toMatchObject({ '5000': 50_000_00 });
   });
 });

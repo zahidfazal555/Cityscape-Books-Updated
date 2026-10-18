@@ -94,6 +94,29 @@ describe('third review regressions (auth)', () => {
     await expect(s.auth.login(u.email, PW, client)).rejects.toThrow(BAD_LOGIN);
   });
 
+  it('BUG-189: a concurrent burst of password-change guesses cannot get past the lockout', async () => {
+    const u = await newUser();
+    const t = await s.auth.login(u.email, PW, client);
+    const { actor } = await s.auth.authenticate(t.accessToken);
+    const results = await Promise.allSettled(
+      Array.from({ length: 12 }, () =>
+        s.auth.changePassword(actor, 'wrong-guess-123', 'Marina-beach-sunrise-42', client),
+      ),
+    );
+    expect(results.every((r) => r.status === 'rejected')).toBe(true);
+    // Guesses are checked one at a time: 4 failures, the 5th locks, the other 7 are refused
+    // without being checked. Before the fix all 12 were checked against the password.
+    expect(
+      await count(
+        `SELECT 1 FROM audit_log WHERE entity_id = $1 AND action = 'password_change' AND outcome = 'failed'`,
+        [u.id],
+      ),
+    ).toBe(4);
+    await expect(
+      s.auth.changePassword(actor, PW, 'Marina-beach-sunrise-42', client),
+    ).rejects.toMatchObject({ field: 'currentPassword' });
+  });
+
   it('BUG-019: replaying any old refresh token is detected, and sessions do not slide past 7 days', async () => {
     const u = await newUser();
     const t1 = await s.auth.login(u.email, PW, client);
