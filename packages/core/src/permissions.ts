@@ -170,11 +170,22 @@ export function hasCustomRights(role: Role, rights: Rights): boolean {
 }
 
 /**
- * ENGINEERING-STANDARDS H2: anything a user without `approvals = full` enters — expenses,
- * payments, payroll, rate changes, discounts — is saved Pending with no journal.
+ * ENGINEERING-STANDARDS H2: anything entered by a non-owner (expenses, payments, payroll, rate
+ * changes, discounts) is saved Pending with no journal. It is keyed to the Owner role, not to
+ * the grantable `approvals` right, so granting that right never lets someone's own entries
+ * skip approval.
  */
 export function requiresApproval(actor: Actor): boolean {
-  return !can(actor, 'approvals', 'full');
+  return actor.role !== 'owner';
+}
+
+/** H2: only the Owner approves (and must also hold `approvals = full`, which is theirs by default). */
+export function canApprove(actor: Actor): boolean {
+  return actor.role === 'owner' && can(actor, 'approvals', 'full');
+}
+
+export function assertApprover(actor: Actor): void {
+  if (!canApprove(actor)) throw new DomainError('FORBIDDEN', 'Only the owner approves entries.');
 }
 
 const PNL_FIELDS = new Set(['profit', 'margin', 'net', 'netValue', 'profitSoFar', 'grossProfit']);

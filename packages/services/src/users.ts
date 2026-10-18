@@ -2,6 +2,7 @@ import {
   DomainError,
   MODULES,
   assertId,
+  authorize,
   hasCustomRights,
   roleTemplate,
   validateRights,
@@ -142,6 +143,34 @@ export class UsersService {
     private readonly pool: pg.Pool,
     private readonly auth: AuthService,
   ) {}
+
+  /** The caller's own profile. No module right needed: it is only their own data. */
+  async me(actor: Actor): Promise<{ name: string; email: string }> {
+    if (!actor.active) throw new DomainError('UNAUTHENTICATED', 'Please sign in again.');
+    return withTenant(this.pool, ctx(actor), async (c) => {
+      const { rows } = await c.query<{ name: string; email: string }>(
+        'SELECT name, email FROM app_user WHERE id = $1',
+        [actor.userId],
+      );
+      const me = rows[0];
+      if (!me) throw new DomainError('UNAUTHENTICATED', 'Please sign in again.');
+      return me;
+    });
+  }
+
+  /**
+   * Active team members who can be a project's manager or engineer: name and role only, for
+   * anyone who may view projects. (The full user list stays owner-only.)
+   */
+  async team(actor: Actor): Promise<{ id: string; name: string; role: Role }[]> {
+    authorize(actor, 'projects', 'view');
+    return withTenant(this.pool, ctx(actor), async (c) => {
+      const { rows } = await c.query<{ id: string; name: string; role: Role }>(
+        `SELECT id, name, role FROM app_user WHERE is_active AND role <> 'auditor' ORDER BY name`,
+      );
+      return rows;
+    });
+  }
 
   async list(actor: Actor): Promise<UserRow[]> {
     assertOwner(actor);

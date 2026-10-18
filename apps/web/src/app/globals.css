@@ -1,0 +1,51 @@
+@import 'tailwindcss';
+
+/* Design tokens from the handoff README ("Design tokens"). */
+@theme {
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --color-primary: #1f5fae;
+  --color-primary-hover: #184e91;
+  --color-primary-tint: #e8f0fa;
+  --color-heading: #0f2a4a;
+  --color-ink: #1b2430;
+  --color-body: #344054;
+  --color-muted: #5b6573;
+  --color-subtle: #8a94a6;
+  --color-line: #e3e7ed;
+  --color-divider: #eef1f5;
+  --color-input: #d5dbe3;
+  --color-dashline: #c9d3df;
+  --color-app: #f4f6f9;
+  --color-thead: #f8fafc;
+  --color-track: #f1f4f8;
+  --color-success: #1e7a4c;
+  --color-success-bg: #e3f4ea;
+  --color-warn: #8a5a00;
+  --color-warn-bg: #fff8eb;
+  --color-warn-line: #f3ddaf;
+  --color-danger: #b42318;
+  --color-danger-bg: #fef3f2;
+  --color-danger-line: #f6cfcb;
+}
+
+html,
+body {
+  background: var(--color-app);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+@media print {
+  [data-noprint] {
+    display: none !important;
+  }
+  body {
+    background: #fff;
+  }
+}
