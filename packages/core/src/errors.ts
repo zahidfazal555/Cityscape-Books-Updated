@@ -1,12 +1,23 @@
 /** One error shape for the whole system: `{ code, message, field? }` mapped to an HTTP status. */
-export type ErrorCode = 'FORBIDDEN' | 'NOT_FOUND' | 'CONFLICT' | 'VALIDATION' | 'PERIOD_LOCKED';
+export type ErrorCode =
+  | 'UNAUTHENTICATED'
+  | 'FORBIDDEN'
+  | 'NOT_FOUND'
+  | 'CONFLICT'
+  | 'VALIDATION'
+  | 'PERIOD_LOCKED'
+  | 'TOO_LARGE'
+  | 'RATE_LIMITED';
 
 const STATUS: Record<ErrorCode, number> = {
+  UNAUTHENTICATED: 401,
   FORBIDDEN: 403,
   NOT_FOUND: 404,
   CONFLICT: 409,
   VALIDATION: 422,
   PERIOD_LOCKED: 423,
+  TOO_LARGE: 413,
+  RATE_LIMITED: 429,
 };
 
 export class DomainError extends Error {

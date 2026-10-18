@@ -42,3 +42,12 @@ describe('lock date (FR-3.3.1, UAT 6)', () => {
     }
   });
 });
+
+describe('business date in India', () => {
+  it('uses IST, not UTC, around midnight', async () => {
+    const { todayIn } = await import('../src/index.js');
+    // 01:30 IST on 31 Oct = 20:00 UTC on 30 Oct
+    expect(todayIn('Asia/Kolkata', new Date('2026-10-30T20:00:00Z'))).toBe('2026-10-31');
+    expect(todayIn('UTC', new Date('2026-10-30T20:00:00Z'))).toBe('2026-10-30');
+  });
+});
