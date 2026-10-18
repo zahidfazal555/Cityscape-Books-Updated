@@ -1,8 +1,9 @@
 import Link from 'next/link';
-import { can, formatDate } from '@csd/core';
+import { can, formatDate, todayIn } from '@csd/core';
 import { Pill } from '@/components/kit';
 import { EmptyState } from '@/components/ui';
 import { istHour, rupees } from '@/lib/format';
+import { SLOT_LABEL } from '@/lib/support';
 import { projectOptions } from '@/lib/purchase-options';
 import { APPROVAL_STATUS } from '@/lib/purchases';
 import { getSession } from '@/lib/session';
@@ -21,6 +22,9 @@ export default async function SiteHome() {
       : Promise.resolve(null),
   ]);
   const mine = (list?.rows ?? []).slice(0, 30);
+  // Service visits assigned to me (README §18): today in teal, overdue in red.
+  const visits = (await services().visits.mine(actor)).filter((v) => v.status === 'scheduled');
+  const today = todayIn();
   return (
     <div className="flex flex-col gap-5">
       <h1 className="text-[20px] font-semibold">
@@ -38,6 +42,36 @@ export default async function SiteHome() {
         >
           + Add site expense
         </Link>
+      ) : null}
+      {visits.length > 0 ? (
+        <section>
+          <h2 className="mb-2 text-[14px] font-semibold">Service visits</h2>
+          <ul className="flex flex-col gap-2">
+            {visits.map((v) => {
+              const tone =
+                v.visitDate < today
+                  ? 'border-danger bg-danger-bg'
+                  : v.visitDate === today
+                    ? 'border-[#14A39A] bg-[#E6F6F5]'
+                    : 'border-line bg-white';
+              return (
+                <li key={v.id}>
+                  <Link
+                    href={`/site/visits/${v.id}`}
+                    className={`flex min-h-[56px] flex-col justify-center rounded-lg border px-3 py-2 text-[14px] ${tone}`}
+                  >
+                    <span className="font-medium">{v.subject}</span>
+                    <span className="text-xs text-muted">
+                      {v.ticketNumber} · {v.projectCode} · {formatDate(v.visitDate)} ·{' '}
+                      {SLOT_LABEL[v.slot]}
+                      {v.visitDate < today ? ' · overdue' : ''}
+                    </span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       ) : null}
       <section>
         <h2 className="mb-2 text-[14px] font-semibold">Your sites</h2>

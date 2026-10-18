@@ -72,7 +72,7 @@ function assertLine(l: LineInput, i: number): void {
   if (!(GST_RATES as readonly number[]).includes(l.gstRate)) {
     throw new DomainError(
       'VALIDATION',
-      'GST rate must be 0, 5, 12, 18 or 28%.',
+      'GST rate must be 0, 5, 12, 18, 28 or 40%.',
       `lines.${i}.gstRate`,
     );
   }

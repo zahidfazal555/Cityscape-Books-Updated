@@ -37,8 +37,14 @@ export function QuoteActions({
   const router = useRouter();
   const [open, setOpen] = useState<Open>(null);
   const { busy, error, run } = useAction();
+  // Every action names the version on screen, so an approval covers exactly what was shown.
   const post = (action: string) => () =>
-    run(() => apiFetch(`/api/v1/quotations/${quote.id}/${action}`, { method: 'POST' }));
+    run(() =>
+      apiFetch(`/api/v1/quotations/${quote.id}/${action}`, {
+        method: 'POST',
+        body: { version: quote.version },
+      }),
+    );
   const remove = () => {
     if (!window.confirm(`Delete draft ${quote.number}?`)) return;
     void run(

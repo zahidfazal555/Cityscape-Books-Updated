@@ -50,7 +50,13 @@ const expenseSchema = z.object(fields);
 const updateSchema = z.object({ ...fields, version: z.number().int().positive() });
 const rejectSchema = z.object({ reason: z.string().trim().min(3, 'Give a reason.').max(500) });
 /** As many as the queue shows (pending() returns at most 500); BUG-112. */
-const bulkSchema = z.object({ ids: z.array(z.string().uuid()).min(1).max(500) });
+const approveSchema = z.object({ version: z.number().int().positive() });
+const bulkSchema = z.object({
+  items: z
+    .array(z.object({ id: z.string().uuid(), version: z.number().int().positive() }))
+    .min(1)
+    .max(500),
+});
 
 export type ExpenseInput = z.input<typeof expenseSchema>;
 export type ExpenseUpdate = z.input<typeof updateSchema>;
@@ -384,11 +390,16 @@ export class ExpensesService {
     });
   }
 
-  /** The Owner approves; the expense posts on its own date (open period only). */
-  async approve(actor: Actor, id: string): Promise<void> {
+  /**
+   * The Owner approves; the expense posts on its own date (open period only). The version is the
+   * one the Owner saw: an expense edited since is refused, never posted at the new amount
+   * (BUG-184).
+   */
+  async approve(actor: Actor, id: string, input: z.input<typeof approveSchema>): Promise<void> {
     assertId(id, 'Expense');
+    const { version } = parse(approveSchema, input);
     assertApprover(actor);
-    await withTenant(this.pool, ctx(actor), (c) => approveTx(c, actor, id));
+    await withTenant(this.pool, ctx(actor), (c) => approveTx(c, actor, id, version));
   }
 
   /** "Approve all": each one in its own transaction, so one locked-period entry blocks no others. */
@@ -396,13 +407,13 @@ export class ExpensesService {
     actor: Actor,
     input: z.input<typeof bulkSchema>,
   ): Promise<{ approved: string[]; failed: { id: string; message: string }[] }> {
-    const { ids } = parse(bulkSchema, input);
+    const { items } = parse(bulkSchema, input);
     assertApprover(actor);
     const approved: string[] = [];
     const failed: { id: string; message: string }[] = [];
-    for (const id of ids) {
+    for (const { id, version } of items) {
       try {
-        await withTenant(this.pool, ctx(actor), (c) => approveTx(c, actor, id));
+        await withTenant(this.pool, ctx(actor), (c) => approveTx(c, actor, id, version));
         approved.push(id);
       } catch (e) {
         // Earlier ones are committed: always report, never fail the whole batch.
@@ -455,14 +466,25 @@ async function checkEdit(
 /** B6: the photo rule applies to manual entries that were not imported from the old trackers. */
 const needsPhoto = (e: Pick<Row, 'source' | 'migrated'>) => e.source === 'manual' && !e.migrated;
 
-async function approveTx(c: pg.PoolClient, actor: Actor, id: string): Promise<void> {
+async function approveTx(
+  c: pg.PoolClient,
+  actor: Actor,
+  id: string,
+  version: number,
+): Promise<void> {
   const e = await loadRow(c, actor, id, true);
   if (e.status !== 'pending')
     throw new DomainError('CONFLICT', `This expense is already ${e.status}.`);
+  if (e.version !== version)
+    throw new DomainError(
+      'CONFLICT',
+      'This expense was changed after you opened the queue. Check it again before approving.',
+    );
   const company = await companyRow(c);
   assertNotLocked(e.txn_date, company.lock_date, 'txnDate');
   // The project may have closed, or the photo rule changed, since it was entered.
-  await assertLiveProject(c, e.project_id);
+  // BUG-154: service visits happen after handover, on Completed projects.
+  await assertLiveProject(c, e.project_id, e.source === 'visit');
   if (needsPhoto(e)) await assertPhoto(c, e.attachment_id);
   const journalId = await postExpense(c, id, {
     projectId: e.project_id,

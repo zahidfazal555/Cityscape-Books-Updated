@@ -25,7 +25,14 @@ export const PO_STATUSES = ['draft', 'issued', 'partly_billed', 'billed', 'cance
 /** Stored: draft, issued, cancelled. Partly billed / Billed are derived from linked bills. */
 export type PoStatus = (typeof PO_STATUSES)[number];
 
-const gstRate = z.union([z.literal(0), z.literal(5), z.literal(12), z.literal(18), z.literal(28)]);
+const gstRate = z.union([
+  z.literal(0),
+  z.literal(5),
+  z.literal(12),
+  z.literal(18),
+  z.literal(28),
+  z.literal(40),
+]);
 const poLine = lineSchema.omit({ gstRate: true });
 const poSchema = z.object({
   vendorId: z.string().uuid('Choose a vendor.'),

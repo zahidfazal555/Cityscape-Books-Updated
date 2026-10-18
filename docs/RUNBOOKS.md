@@ -46,6 +46,9 @@ For a personal-data breach: also follow the DPDP notification duty (timeline to 
 ## 6. Quarterly restore drill
 Restore the latest nightly dump into staging, then run `pnpm verify:books` (trial balance, row counts, checksum of the invoice series). Record the duration below. A failed drill counts as an S2 incident.
 
+## 6a. Scheduled jobs
+See docs/GO-LIVE.md §5: `pnpm jobs sla-sweep` (every 15 min), `pnpm jobs verify-books` (nightly; exit code 1 is an S2), `pnpm jobs retention` (weekly). A missed run shows as no new `sla` notifications or no nightly verify log line; check the host's cron log first.
+
 ## 7. Third-party processors
 | Service | Purpose | Region | DPA |
 |---|---|---|---|
@@ -67,5 +70,5 @@ Restore the latest nightly dump into staging, then run `pnpm verify:books` (tria
 - Stored outside the database under `ATTACHMENT_DIR` (required in production; the app refuses to start without it). Keys are `<company id>/<attachment id>`, created once and never overwritten; the `attachment` table holds type, size and SHA-256.
 - Back the directory up with the database, on the same schedule; a restore needs both. Verify a sample after restore by comparing SHA-256 with `attachment.sha256`.
 - Uploads are type-sniffed (JPEG, PNG, PDF only, ≤ 10 MB). JPEG and PNG are re-encoded from their pixels, which drops EXIF/GPS, comments, appended images and trailers. PDFs are stored as uploaded and always served as a download, never inline. Every view writes an audit row (H4).
-- Limits: 20 uploads per user per minute, and at most 20 photos per user waiting to be attached (last 7 days).
+- Limits: 30 uploads per user per minute, and at most 30 photos per user waiting to be attached (last 7 days), enough for one site visit (10 before, 10 after, 1 bill). Site-visit photos are stored the same way and follow the ticket's project scope.
 - Moving to an S3-compatible bucket: implement `BlobStore` (`put`/`get`) for the bucket, copy the directory tree key-for-key, then switch the container in `apps/web/src/lib/server.ts`.
