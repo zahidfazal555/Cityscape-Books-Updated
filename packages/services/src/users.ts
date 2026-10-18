@@ -2,6 +2,7 @@ import {
   DomainError,
   MODULES,
   assertId,
+  authorize,
   hasCustomRights,
   roleTemplate,
   validateRights,
@@ -154,6 +155,20 @@ export class UsersService {
       const me = rows[0];
       if (!me) throw new DomainError('UNAUTHENTICATED', 'Please sign in again.');
       return me;
+    });
+  }
+
+  /**
+   * Active team members who can be a project's manager or engineer: name and role only, for
+   * anyone who may view projects. (The full user list stays owner-only.)
+   */
+  async team(actor: Actor): Promise<{ id: string; name: string; role: Role }[]> {
+    authorize(actor, 'projects', 'view');
+    return withTenant(this.pool, ctx(actor), async (c) => {
+      const { rows } = await c.query<{ id: string; name: string; role: Role }>(
+        `SELECT id, name, role FROM app_user WHERE is_active AND role <> 'auditor' ORDER BY name`,
+      );
+      return rows;
     });
   }
 

@@ -102,6 +102,8 @@ export async function reverseJournal(
   journalId: string,
   txnDate: IsoDate,
   narration: string,
+  /** Tag the reversal as its own document (e.g. a credit note) instead of the original's source. */
+  source?: { sourceType: string; sourceId: string },
 ): Promise<string> {
   const head = await client.query<{ source_type: string; source_id: string | null }>(
     'SELECT source_type, source_id FROM journal WHERE id = $1',
@@ -124,8 +126,8 @@ export async function reverseJournal(
     client,
     {
       txnDate,
-      sourceType: original.source_type,
-      sourceId: original.source_id,
+      sourceType: source?.sourceType ?? original.source_type,
+      sourceId: source?.sourceId ?? original.source_id,
       narration,
       reversesJournalId: journalId,
       lines: rows.map((r) => ({

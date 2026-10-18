@@ -1,5 +1,6 @@
-import { DomainError } from '@csd/core';
-import type { z } from 'zod';
+import { DomainError, parseIsoDate } from '@csd/core';
+import type pg from 'pg';
+import { z } from 'zod';
 
 /** Parses service input with zod and turns the first issue into a 422 on that field. */
 export function parse<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
@@ -48,4 +49,30 @@ export function blankToNull(value: unknown): unknown {
 /** PAN shown as •••••1234F unless the viewer may see it in full. */
 export function maskPan(pan: string | null): string | null {
   return pan === null ? null : `•••••${pan.slice(5)}`;
+}
+
+/** YYYY-MM-DD that is a real calendar date. */
+export const isoDate = z.string().refine((d) => {
+  try {
+    parseIsoDate(d);
+    return true;
+  } catch {
+    return false;
+  }
+}, 'Enter a valid date.');
+
+export interface CompanyRow {
+  lock_date: string | null;
+  fy_start_month: number;
+  state_code: string;
+}
+
+/** Lock date, FY start and the company's GST state, read inside the caller's transaction. */
+export async function companyRow(c: pg.PoolClient): Promise<CompanyRow> {
+  const { rows } = await c.query<CompanyRow>(
+    `SELECT to_char(lock_date, 'YYYY-MM-DD') AS lock_date, fy_start_month, state_code FROM company`,
+  );
+  const row = rows[0];
+  if (!row) throw new DomainError('NOT_FOUND', 'Company not found.');
+  return row;
 }

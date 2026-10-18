@@ -1,4 +1,5 @@
 import { DomainError } from '@csd/core';
+import { env } from './env';
 
 /**
  * Fixed-window counters in process memory (ENGINEERING-STANDARDS §2: login 10/min per IP,
@@ -37,9 +38,14 @@ export class RateLimiter {
   }
 }
 
+let loginLimiter: RateLimiter | undefined;
+
 export const limits = {
-  /** Sign-in attempts per client IP. */
-  login: new RateLimiter(10, 60_000),
+  /** Sign-in attempts per client IP; the limit comes from validated configuration. */
+  get login(): RateLimiter {
+    loginLimiter ??= new RateLimiter(env().CSD_LOGIN_LIMIT_PER_MINUTE, 60_000);
+    return loginLimiter;
+  },
   /** Password-reset and invite redemptions per client IP. */
   tokenRedeem: new RateLimiter(10, 60_000),
   /** Reset emails per address and per IP: stops mail floods and link churn. */
@@ -47,4 +53,6 @@ export const limits = {
   resetIp: new RateLimiter(10, 60 * 60_000),
   /** Authenticated API calls per user. */
   api: new RateLimiter(300, 60_000),
+  /** Photo uploads per user (10 MB each): BUG-106; a site visit can take 21 at once (BUG-167). */
+  upload: new RateLimiter(30, 60_000),
 };

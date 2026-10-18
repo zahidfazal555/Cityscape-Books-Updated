@@ -4,7 +4,6 @@ import {
   authorize,
   can,
   fromDecimalString,
-  parseIsoDate,
   projectScope,
   stripPnl,
   toDecimalString,
@@ -15,19 +14,11 @@ import {
 import { allocateNumber, withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import { z } from 'zod';
-import { parse, pick, tenantOf as ctx } from './validation.js';
+import { isoDate, parse, pick, tenantOf as ctx } from './validation.js';
 
 export const PROJECT_STATUSES = ['active', 'on_hold', 'completed', 'cancelled'] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
-const isoDate = z.string().refine((d) => {
-  try {
-    parseIsoDate(d);
-    return true;
-  } catch {
-    return false;
-  }
-}, 'Enter a valid date.');
 const paise = z
   .number()
   .int('Amount must be in paise.')
@@ -150,39 +141,7 @@ export class ProjectsService {
     authorize(actor, 'projects', 'edit');
     const fields = newFields(parse(projectSchema, input));
     assertDates(fields.startDate, fields.endDate);
-    return withTenant(this.pool, ctx(actor), async (c) => {
-      await assertReferences(c, fields, null);
-      const code = await allocateNumber(c, 'project', fields.startDate);
-      const { rows } = await c.query<{ id: string }>(
-        `INSERT INTO project (company_id, code, name, client_id, site_address, status, start_date, end_date,
-                              contract_value, cost_budget, manager_id, engineer_id, created_by)
-         VALUES (app_company_id(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, app_user_id()) RETURNING id`,
-        [code, ...fieldParams(fields)],
-      );
-      const id = rows[0]?.id;
-      if (!id) throw new Error('project insert returned no id');
-      // A scoped creator must be able to see what they just created.
-      if (actor.projects !== 'all' && actor.role !== 'owner') {
-        await c.query(
-          'INSERT INTO user_project (company_id, user_id, project_id) VALUES (app_company_id(), app_user_id(), $1)',
-          [id],
-        );
-        // A scope change is an access change: record it like any rights change.
-        await writeAudit(c, {
-          action: 'grant_scope',
-          entity: 'user',
-          entityId: actor.userId,
-          after: { projectId: id, reason: 'creator of the project' },
-        });
-      }
-      await writeAudit(c, {
-        action: 'create',
-        entity: 'project',
-        entityId: id,
-        after: { code, ...fields },
-      });
-      return { id, code };
-    });
+    return withTenant(this.pool, ctx(actor), (c) => createProjectTx(c, actor, fields));
   }
 
   async update(actor: Actor, id: string, input: ProjectUpdate): Promise<void> {
@@ -208,7 +167,50 @@ export class ProjectsService {
   }
 }
 
-type Fields = Pick<
+/**
+ * Creates CSD-PRJ-#### inside the caller's transaction (used by "New project" and by accepting a
+ * quotation). The caller has already checked `projects = edit`.
+ */
+export async function createProjectTx(
+  c: pg.PoolClient,
+  actor: Actor,
+  fields: Fields,
+): Promise<{ id: string; code: string }> {
+  assertDates(fields.startDate, fields.endDate);
+  await assertReferences(c, fields, null);
+  const code = await allocateNumber(c, 'project', fields.startDate);
+  const { rows } = await c.query<{ id: string }>(
+    `INSERT INTO project (company_id, code, name, client_id, site_address, status, start_date, end_date,
+                          contract_value, cost_budget, manager_id, engineer_id, created_by)
+     VALUES (app_company_id(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, app_user_id()) RETURNING id`,
+    [code, ...fieldParams(fields)],
+  );
+  const id = rows[0]?.id;
+  if (!id) throw new Error('project insert returned no id');
+  // A scoped creator must be able to see what they just created.
+  if (actor.projects !== 'all' && actor.role !== 'owner') {
+    await c.query(
+      'INSERT INTO user_project (company_id, user_id, project_id) VALUES (app_company_id(), app_user_id(), $1)',
+      [id],
+    );
+    // A scope change is an access change: record it like any rights change.
+    await writeAudit(c, {
+      action: 'grant_scope',
+      entity: 'user',
+      entityId: actor.userId,
+      after: { projectId: id, reason: 'creator of the project' },
+    });
+  }
+  await writeAudit(c, {
+    action: 'create',
+    entity: 'project',
+    entityId: id,
+    after: { code, ...fields },
+  });
+  return { id, code };
+}
+
+export type Fields = Pick<
   Project,
   | 'name'
   | 'clientId'

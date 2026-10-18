@@ -27,6 +27,11 @@ describe('navigation follows rights (FR-3.4.1)', () => {
     expect(labels('manager')).not.toContain('Cash, bank & UPI');
     expect(labels('manager')).not.toContain('Payroll');
   });
+  it('the auditor gets the audit trail entry, nobody else does', () => {
+    expect(labels('auditor')).toContain('Audit trail');
+    expect(labels('owner')).not.toContain('Audit trail');
+    expect(labels('admin')).not.toContain('Audit trail');
+  });
   it('site engineer sees only projects, expenses and inventory; empty groups are dropped', () => {
     expect(labels('site')).toEqual(['Projects', 'Expenses', 'Inventory']);
   });

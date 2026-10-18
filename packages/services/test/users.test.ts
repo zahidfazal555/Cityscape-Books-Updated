@@ -184,6 +184,26 @@ describe('owner-only admin panel', () => {
   });
 });
 
+describe('team picker', () => {
+  it('lists active non-auditor members for anyone who can view projects; nothing else leaks', async () => {
+    const pmActor = {
+      ...owner,
+      userId: await s.users.create(owner, { ...base, role: 'manager', email: email() }),
+      role: 'manager' as const,
+      rights: roleTemplate('manager'),
+    };
+    const team = await s.users.team(pmActor);
+    expect(team.length).toBeGreaterThan(0);
+    expect(Object.keys(team[0]!).sort()).toEqual(['id', 'name', 'role']);
+    expect(team.every((m) => m.role !== 'auditor')).toBe(true);
+    const noProjects = {
+      ...pmActor,
+      rights: { ...roleTemplate('manager'), projects: 'none' as const },
+    };
+    await expect(s.users.team(noProjects)).rejects.toMatchObject({ status: 403 });
+  });
+});
+
 describe('lock date (FR-3.3.1)', () => {
   it('owner sets and clears the lock date; future dates are refused; changes are audited', async () => {
     await s.settings.setLockDate(owner, '2026-09-30');

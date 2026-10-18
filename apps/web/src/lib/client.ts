@@ -17,6 +17,22 @@ export class ApiFailure extends Error {
 
 let refreshing: Promise<boolean> | null = null;
 
+/**
+ * JSON content type when there is a body, and an Idempotency-Key on every POST: one key per
+ * logical action, so the retry after a session refresh reuses it and the server never runs the
+ * same POST twice. Forms pass a key that lives as long as the form is open.
+ */
+function requestHeaders(
+  method: string,
+  init: { body?: unknown; raw?: Blob; idempotencyKey?: string },
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (init.raw) headers['content-type'] = init.raw.type || 'application/octet-stream';
+  else if (init.body !== undefined) headers['content-type'] = 'application/json';
+  if (method === 'POST') headers['idempotency-key'] = init.idempotencyKey ?? newIdempotencyKey();
+  return headers;
+}
+
 /** Unauthenticated endpoints: a 401 from these is an answer, not an expired session. */
 const PUBLIC_AUTH = new Set([
   '/api/v1/auth/login',
@@ -43,14 +59,17 @@ function refreshSession(): Promise<boolean> {
  */
 export async function apiFetch<T>(
   path: string,
-  init: { method?: string; body?: unknown } = {},
+  /** `raw` sends a file as the request body (bill photo uploads). */
+  init: { method?: string; body?: unknown; raw?: Blob; idempotencyKey?: string } = {},
 ): Promise<T> {
+  const method = init.method ?? 'GET';
+  const headers = requestHeaders(method, init);
   const send = (): Promise<Response> =>
     fetch(path, {
-      method: init.method ?? 'GET',
+      method,
       credentials: 'same-origin',
-      headers: init.body === undefined ? {} : { 'content-type': 'application/json' },
-      body: init.body === undefined ? null : JSON.stringify(init.body),
+      headers,
+      body: init.raw ?? (init.body === undefined ? null : JSON.stringify(init.body)),
     });
   let res = await send();
   if (res.status === 401 && !PUBLIC_AUTH.has(path)) {
@@ -72,4 +91,21 @@ export async function apiFetch<T>(
   return data as T;
 }
 
+/**
+ * A private file (bill photo) as a Blob, through the same refresh-on-401 as apiFetch: a plain
+ * <img src> cannot refresh an expired session (BUG-111).
+ */
+export async function apiBlob(path: string): Promise<Blob> {
+  const send = () => fetch(path, { credentials: 'same-origin' });
+  let res = await send();
+  if (res.status === 401 && (await refreshSession())) res = await send();
+  if (!res.ok)
+    throw new ApiFailure(res.status, { code: 'INTERNAL', message: 'Could not load the file.' });
+  return res.blob();
+}
+
 export { safeNext } from './redirect';
+
+export function newIdempotencyKey(): string {
+  return crypto.randomUUID();
+}

@@ -1,3 +1,5 @@
+import os from 'node:os';
+import path from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
 
 const PORT = 3100;
@@ -41,6 +43,9 @@ export default defineConfig({
       TRUSTED_PROXIES: '0',
       MAIL_MODE: 'outbox',
       CSD_ALLOW_OUTBOX_IN_PRODUCTION: 'e2e',
+      // Every test signs in from the same address; the limiter itself is unit-tested.
+      CSD_LOGIN_LIMIT_PER_MINUTE: '1000',
+      ATTACHMENT_DIR: path.join(os.tmpdir(), `csd-e2e-attachments-${process.pid}`),
     },
   },
 });
