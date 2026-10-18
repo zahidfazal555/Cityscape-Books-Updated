@@ -28,6 +28,7 @@ import {
 } from '@csd/db';
 import type pg from 'pg';
 import { z } from 'zod';
+import { notifyBudget } from './budget-alerts.js';
 import { assertLiveProject, vendorParty } from './purchase-orders.js';
 import { companyRow, isoDate, onDuplicate, parse, tenantOf as ctx } from './validation.js';
 
@@ -230,6 +231,7 @@ export class BillsService {
         narration: `Bill ${data.billNo} from ${vendor.name}`,
         lines: billJournalLines(t, data.category, data.vendorId, data.projectId),
       });
+      await notifyBudget(c, [data.projectId]);
       await c
         .query(
           `INSERT INTO bill (id, company_id, vendor_id, vendor_name, vendor_gstin, bill_no, bill_date, due_date,
@@ -315,6 +317,7 @@ export class BillsService {
         narration: `Bill ${data.billNo} from ${before.vendorName} (edited)`,
         lines: billJournalLines(t, data.category, before.vendorId, before.projectId),
       });
+      await notifyBudget(c, [before.projectId]);
       await c
         .query(
           `UPDATE bill SET bill_no = $2, bill_date = $3, due_date = $4, category = $5, gst_rate = $6,

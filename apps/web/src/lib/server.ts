@@ -7,6 +7,7 @@ import {
   KnowledgeBaseService,
   NotificationsService,
   SupportDashboardService,
+  DashboardService,
   TicketBillingService,
   TicketsService,
   VisitsService,
@@ -76,6 +77,7 @@ export interface Services {
   kb: KnowledgeBaseService;
   ticketBilling: TicketBillingService;
   supportDashboard: SupportDashboardService;
+  dashboard: DashboardService;
   notifications: NotificationsService;
 }
 
@@ -147,6 +149,7 @@ export function services(): Services {
     kb: new KnowledgeBaseService(pool),
     ticketBilling: new TicketBillingService(pool),
     supportDashboard: new SupportDashboardService(pool),
+    dashboard: new DashboardService(pool),
     notifications: new NotificationsService(pool),
   };
   return g.__csd;

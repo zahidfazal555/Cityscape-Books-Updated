@@ -43,6 +43,7 @@ import {
   type EntryStatus,
   type EntryTable,
 } from './money-entries.js';
+import { notifyBudget } from './budget-alerts.js';
 import { applyRate, insertRateChange, supersedePending } from './payroll.js';
 import { companyRow, isoDate, parse, tenantOf as ctx } from './validation.js';
 
@@ -739,7 +740,7 @@ async function postWage(
   pay: { payDate: IsoDate; amount: Paise; mode: PaymentMode; projectId: string },
   name: string,
 ): Promise<string> {
-  return postJournal(c, {
+  const journalId = await postJournal(c, {
     txnDate: pay.payDate,
     sourceType: 'wage_payment',
     sourceId: id,
@@ -749,6 +750,8 @@ async function postWage(
       { accountCode: accountFor(pay.mode), credit: pay.amount, projectId: pay.projectId },
     ],
   });
+  await notifyBudget(c, [pay.projectId]);
+  return journalId;
 }
 
 async function postContract(
@@ -762,11 +765,13 @@ async function postContract(
     { accountCode: accountFor(pay.mode), credit: pay.amount - pay.tds, projectId: job.projectId },
   ];
   if (pay.tds > 0) lines.push({ accountCode: '2310', credit: pay.tds, projectId: job.projectId });
-  return postJournal(c, {
+  const journalId = await postJournal(c, {
     txnDate: pay.payDate,
     sourceType: 'contract_payment',
     sourceId: id,
     narration: `${job.contractor}: ${job.work}`,
     lines,
   });
+  await notifyBudget(c, [job.projectId]);
+  return journalId;
 }

@@ -38,6 +38,11 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
   sla-sweep / verify-books / retention / bootstrap), the production Dockerfile with a CI image build, and
   docs/GO-LIVE.md.
 
+- The Owner's dashboard: alert banners (approvals waiting, projects at 85% or over 100% of the
+  cost budget), KPI cards, active projects with income, expense, net value (with `pnl`) and budget
+  used, spend by category and receivables ageing. Budget alerts also arrive as notifications when
+  any cost is posted.
+
 ### Changed
 - H2 approvals are keyed to the Owner role: granting `approvals = full` to another user no longer
   lets their entries post directly or lets them approve.
