@@ -560,3 +560,21 @@ describe('review regressions (PR 9)', () => {
     ).rejects.toMatchObject({ code: 'VALIDATION', field: 'purchaseOrderId' });
   });
 });
+
+describe('PO detail shows the vendor’s current registration (BUG-117)', () => {
+  it('reports the GSTIN on the master, not only the snapshot', async () => {
+    const { projectId } = await clientProject(owner);
+    const v = await vendor('33', false);
+    const po = await pos.create(owner, {
+      vendorId: v,
+      projectId,
+      poDate: '2026-10-01',
+      lines: [{ description: 'Sand', qtyMilli: 1000, rate: 1_000_00 }],
+    });
+    const g = gstin('33ABQDE1234F1Z');
+    await superPool.query('UPDATE contact SET gstin = $2 WHERE id = $1', [v, g]);
+    const view = await pos.get(owner, po.id);
+    expect(view.vendorGstin).toBeNull();
+    expect(view.currentVendor).toEqual({ gstin: g, stateCode: '33' });
+  });
+});

@@ -49,7 +49,14 @@ const fields = {
 const expenseSchema = z.object(fields);
 const updateSchema = z.object({ ...fields, version: z.number().int().positive() });
 const rejectSchema = z.object({ reason: z.string().trim().min(3, 'Give a reason.').max(500) });
-const bulkSchema = z.object({ ids: z.array(z.string().uuid()).min(1).max(200) });
+/** As many as the queue shows (pending() returns at most 500); BUG-112. */
+const approveSchema = z.object({ version: z.number().int().positive() });
+const bulkSchema = z.object({
+  items: z
+    .array(z.object({ id: z.string().uuid(), version: z.number().int().positive() }))
+    .min(1)
+    .max(500),
+});
 
 export type ExpenseInput = z.input<typeof expenseSchema>;
 export type ExpenseUpdate = z.input<typeof updateSchema>;
@@ -67,6 +74,8 @@ export interface Expense {
   mode: ExpenseMode;
   paidTo: string | null;
   attachmentId: string | null;
+  /** Lets the viewer choose image or download without guessing (BUG-111). */
+  attachmentType: string | null;
   migrated: boolean;
   source: ExpenseSource;
   status: ExpenseStatus;
@@ -81,24 +90,29 @@ export interface ExpenseFilter {
   projectId?: string | undefined;
   category?: CostCategory | undefined;
   status?: ExpenseStatus | undefined;
+  /** Only the caller's own entries (site engineer home; BUG-118). */
+  mine?: boolean | undefined;
 }
 
 const SELECT = `
   SELECT e.id, e.project_id, p.code AS project_code, p.name AS project_name,
          to_char(e.txn_date, 'YYYY-MM-DD') AS txn_date, e.particulars, e.category, e.amount::text, e.paid_by,
          e.mode, e.paid_to, e.attachment_id, e.migrated, e.source, e.status, e.reject_reason,
-         u.name AS submitted_by, e.created_by, e.created_at, e.version, e.journal_id
+         u.name AS submitted_by, e.created_by, e.created_at, e.version, e.journal_id,
+         at.content_type AS attachment_type
     FROM expense e
     JOIN project p ON p.id = e.project_id
     LEFT JOIN app_user u ON u.id = e.created_by
+    LEFT JOIN attachment at ON at.id = e.attachment_id
    WHERE e.deleted_at IS NULL`;
 
-/** $1 scope, $2 project, $3 category, $4 status. */
+/** $1 scope, $2 project, $3 category, $4 status, $5 only mine. */
 const FILTER = `
      AND ($1::uuid[] IS NULL OR e.project_id = ANY($1::uuid[]))
      AND ($2::uuid IS NULL OR e.project_id = $2)
      AND ($3::text IS NULL OR e.category = $3)
-     AND ($4::text IS NULL OR e.status = $4)`;
+     AND ($4::text IS NULL OR e.status = $4)
+     AND (NOT $5 OR e.created_by = app_user_id())`;
 
 interface Row {
   id: string;
@@ -122,6 +136,7 @@ interface Row {
   created_at: Date;
   version: number;
   journal_id: string | null;
+  attachment_type: string | null;
 }
 
 const toExpense = (r: Row): Expense => ({
@@ -137,6 +152,7 @@ const toExpense = (r: Row): Expense => ({
   mode: r.mode,
   paidTo: r.paid_to,
   attachmentId: r.attachment_id,
+  attachmentType: r.attachment_type,
   migrated: r.migrated,
   source: r.source,
   status: r.status,
@@ -152,6 +168,7 @@ const params = (actor: Actor, f: ExpenseFilter) => [
   f.projectId ?? null,
   f.category ?? null,
   f.status ?? null,
+  f.mine ?? false,
 ];
 
 /**
@@ -373,11 +390,16 @@ export class ExpensesService {
     });
   }
 
-  /** The Owner approves; the expense posts on its own date (open period only). */
-  async approve(actor: Actor, id: string): Promise<void> {
+  /**
+   * The Owner approves; the expense posts on its own date (open period only). The version is the
+   * one the Owner saw: an expense edited since is refused, never posted at the new amount
+   * (BUG-184).
+   */
+  async approve(actor: Actor, id: string, input: z.input<typeof approveSchema>): Promise<void> {
     assertId(id, 'Expense');
+    const { version } = parse(approveSchema, input);
     assertApprover(actor);
-    await withTenant(this.pool, ctx(actor), (c) => approveTx(c, actor, id));
+    await withTenant(this.pool, ctx(actor), (c) => approveTx(c, actor, id, version));
   }
 
   /** "Approve all": each one in its own transaction, so one locked-period entry blocks no others. */
@@ -385,13 +407,13 @@ export class ExpensesService {
     actor: Actor,
     input: z.input<typeof bulkSchema>,
   ): Promise<{ approved: string[]; failed: { id: string; message: string }[] }> {
-    const { ids } = parse(bulkSchema, input);
+    const { items } = parse(bulkSchema, input);
     assertApprover(actor);
     const approved: string[] = [];
     const failed: { id: string; message: string }[] = [];
-    for (const id of ids) {
+    for (const { id, version } of items) {
       try {
-        await withTenant(this.pool, ctx(actor), (c) => approveTx(c, actor, id));
+        await withTenant(this.pool, ctx(actor), (c) => approveTx(c, actor, id, version));
         approved.push(id);
       } catch (e) {
         // Earlier ones are committed: always report, never fail the whole batch.
@@ -444,14 +466,25 @@ async function checkEdit(
 /** B6: the photo rule applies to manual entries that were not imported from the old trackers. */
 const needsPhoto = (e: Pick<Row, 'source' | 'migrated'>) => e.source === 'manual' && !e.migrated;
 
-async function approveTx(c: pg.PoolClient, actor: Actor, id: string): Promise<void> {
+async function approveTx(
+  c: pg.PoolClient,
+  actor: Actor,
+  id: string,
+  version: number,
+): Promise<void> {
   const e = await loadRow(c, actor, id, true);
   if (e.status !== 'pending')
     throw new DomainError('CONFLICT', `This expense is already ${e.status}.`);
+  if (e.version !== version)
+    throw new DomainError(
+      'CONFLICT',
+      'This expense was changed after you opened the queue. Check it again before approving.',
+    );
   const company = await companyRow(c);
   assertNotLocked(e.txn_date, company.lock_date, 'txnDate');
   // The project may have closed, or the photo rule changed, since it was entered.
-  await assertLiveProject(c, e.project_id);
+  // BUG-154: service visits happen after handover, on Completed projects.
+  await assertLiveProject(c, e.project_id, e.source === 'visit');
   if (needsPhoto(e)) await assertPhoto(c, e.attachment_id);
   const journalId = await postExpense(c, id, {
     projectId: e.project_id,

@@ -1,4 +1,4 @@
-import { can, type Actor, type Module } from '@csd/core';
+import { can, canApprove, projectScope, type Actor, type Module } from '@csd/core';
 
 export interface NavItem {
   label: string;
@@ -36,34 +36,34 @@ const GROUPS: NavGroup[] = [
   {
     label: 'Purchases',
     items: [
-      { label: 'Purchase orders', href: '/purchase-orders', module: 'pos', ready: false },
-      { label: 'Purchase bills', href: '/bills', module: 'bills', ready: false },
-      { label: 'Expenses', href: '/expenses', module: 'expenses', ready: false },
-      { label: 'Approvals', href: '/approvals', module: 'approvals', ready: false },
+      { label: 'Purchase orders', href: '/purchase-orders', module: 'pos', ready: true },
+      { label: 'Purchase bills', href: '/bills', module: 'bills', ready: true },
+      { label: 'Expenses', href: '/expenses', module: 'expenses', ready: true },
+      { label: 'Approvals', href: '/approvals', module: 'approvals', ready: true },
     ],
   },
   {
     label: 'Accounts',
     items: [
-      { label: 'Cash, bank & UPI', href: '/banking', module: 'banking', ready: false },
-      { label: 'Outstanding', href: '/outstanding', module: 'outstanding', ready: false },
-      { label: 'GST returns', href: '/gst', module: 'gst', ready: false },
-      { label: 'Reports', href: '/reports', module: 'reports', ready: false },
+      { label: 'Cash, bank & UPI', href: '/banking', module: 'banking', ready: true },
+      { label: 'Outstanding', href: '/outstanding', module: 'outstanding', ready: true },
+      { label: 'GST returns', href: '/gst', module: 'gst', ready: true },
+      { label: 'Reports', href: '/reports', module: 'reports', ready: true },
     ],
   },
   {
     label: 'Support',
     items: [
-      { label: 'Tickets', href: '/tickets', module: 'tickets', ready: false },
-      { label: 'Warranty register', href: '/warranty', module: 'warranty', ready: false },
-      { label: 'Knowledge base', href: '/kb', module: 'kb', ready: false },
+      { label: 'Tickets', href: '/tickets', module: 'tickets', ready: true },
+      { label: 'Warranty register', href: '/warranty', module: 'warranty', ready: true },
+      { label: 'Knowledge base', href: '/kb', module: 'kb', ready: true },
     ],
   },
   {
     label: 'Operations',
     items: [
-      { label: 'Payroll', href: '/payroll', module: 'payroll', ready: false },
-      { label: 'Inventory', href: '/inventory', module: 'inventory', ready: false },
+      { label: 'Payroll', href: '/payroll', module: 'payroll', ready: true },
+      { label: 'Inventory', href: '/inventory', module: 'inventory', ready: true },
     ],
   },
   {
@@ -80,6 +80,11 @@ export function navFor(actor: Actor): NavGroup[] {
     if (i.module === 'owner') return actor.role === 'owner';
     // The owner reaches the audit trail from Users & security; the auditor gets its own entry.
     if (i.module === 'auditTrail') return actor.role === 'auditor';
+    // H2: only the Owner approves, whatever rights others are given (BUG-115).
+    if (i.module === 'approvals') return canApprove(actor);
+    // Company-wide books: a user limited to some projects would only reach "no access" (BUG-134).
+    if (i.module === 'banking' || i.module === 'gst')
+      return can(actor, i.module, 'view') && projectScope(actor) === null;
     return can(actor, i.module, 'view');
   };
   return GROUPS.map((g) => ({ ...g, items: g.items.filter(visible) })).filter(

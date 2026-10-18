@@ -109,3 +109,12 @@ describe('sales screens (PR 8 review regressions)', () => {
     expect(totals.cash).toBe(listed.reduce((s, r) => s + r.amount, 0));
   });
 });
+
+describe('company state and purchase letterhead (BUG-116)', () => {
+  it('companyInfo carries the GST state; a POs-only user can read the letterhead', async () => {
+    expect((await settings.companyInfo(owner)).stateCode).toBe('33');
+    const site = actorFor(f, await makeUser(f.companyId, 'site'), 'site');
+    const posOnly: Actor = { ...site, rights: { ...roleTemplate('site'), pos: 'view' } };
+    expect((await settings.letterhead(posOnly)).name).toContain('Screens Co');
+  });
+});
