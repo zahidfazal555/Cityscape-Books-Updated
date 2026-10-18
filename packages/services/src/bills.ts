@@ -34,7 +34,14 @@ import { companyRow, isoDate, onDuplicate, parse, tenantOf as ctx } from './vali
 export const BILL_STATUSES = ['unpaid', 'partially_paid', 'paid', 'overdue'] as const;
 export type BillStatus = (typeof BILL_STATUSES)[number];
 
-const gstRate = z.union([z.literal(0), z.literal(5), z.literal(12), z.literal(18), z.literal(28)]);
+const gstRate = z.union([
+  z.literal(0),
+  z.literal(5),
+  z.literal(12),
+  z.literal(18),
+  z.literal(28),
+  z.literal(40),
+]);
 const fields = {
   billNo: z.string().trim().min(1, "Enter the vendor's bill number.").max(60),
   billDate: isoDate,

@@ -5,6 +5,7 @@ import {
   authorize,
   can,
   fromDecimalString,
+  parseIsoDate,
   projectScope,
   stripPnl,
   todayIn,
@@ -148,6 +149,7 @@ export class ReportsService {
       throw new DomainError('FORBIDDEN', 'The trial balance needs the profit right.');
     if (projectScope(actor) !== null)
       throw new DomainError('FORBIDDEN', 'The trial balance needs access to all projects.');
+    parseIsoDate(asOf, 'asOf');
     return withTenant(this.pool, ctx(actor), async (c) => {
       const { rows } = await c.query<{ code: string; name: string; type: string; net: string }>(
         `SELECT a.code, a.name, a.type, coalesce(sum(l.debit - l.credit), 0)::text AS net

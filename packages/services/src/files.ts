@@ -1,18 +1,22 @@
-import jpeg from 'jpeg-js';
-import { PNG } from 'pngjs';
+import sharp from 'sharp';
 
 /**
  * Upload checks (Tech Spec §7 "Input"): the type is sniffed from the bytes, never trusted from
  * the client, and images are re-encoded from their pixels. Re-encoding drops everything that is
  * not the picture: EXIF and GPS, comments, XMP, MPF/depth/gain-map images appended after the
  * first image, and Motion Photo trailers (BUG-105).
+ *
+ * Decoding runs in sharp (libvips) on its own threads, and the pixel count is checked from the
+ * header before any pixels are decoded, so a small file declaring a huge image is refused at once
+ * and a large photo never blocks the event loop (BUG-183).
  */
 export type AllowedType = 'image/jpeg' | 'image/png' | 'application/pdf';
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
-/** A phone photo is 12–50 MP; anything larger is refused before decoding into memory. */
-const MAX_MEGAPIXELS = 60;
+/** A phone photo is 12–50 MP (the app downscales before upload); anything larger is refused. */
+export const MAX_PIXELS = 50_000_000;
 const JPEG_QUALITY = 85;
+const THUMB_EDGE = 240;
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -23,64 +27,10 @@ export function sniffType(b: Buffer): AllowedType | null {
   return null;
 }
 
-interface Pixels {
-  width: number;
-  height: number;
-  data: Uint8Array;
-}
-
-/** Decoded RGBA pixels of a JPEG, or null when it is not decodable. */
-function decodeJpeg(b: Buffer): Pixels | null {
-  try {
-    return jpeg.decode(b, {
-      useTArray: true,
-      formatAsRGBA: true,
-      maxResolutionInMP: MAX_MEGAPIXELS,
-      maxMemoryUsageInMB: 1024,
-    });
-  } catch {
-    return null;
-  }
-}
-
-const THUMB_EDGE = 240;
-
-/**
- * A small JPEG for list and approval cards (nearest-neighbour; it only has to be recognisable).
- * Loading cards then never fetches, or audits, the full photo (BUG-110).
- */
-export function thumbnailOf(img: Pixels): Buffer {
-  const scale = Math.min(1, THUMB_EDGE / Math.max(img.width, img.height));
-  const w = Math.max(1, Math.round(img.width * scale));
-  const h = Math.max(1, Math.round(img.height * scale));
-  const out = Buffer.alloc(w * h * 4);
-  for (let y = 0; y < h; y++) {
-    const sy = Math.min(img.height - 1, Math.floor(y / scale));
-    for (let x = 0; x < w; x++) {
-      const sx = Math.min(img.width - 1, Math.floor(x / scale));
-      const si = (sy * img.width + sx) * 4;
-      out.set(img.data.subarray(si, si + 4), (y * w + x) * 4);
-    }
-  }
-  return jpeg.encode({ width: w, height: h, data: out }, 70).data;
-}
-
-function decodePng(b: Buffer): Pixels | null {
-  try {
-    const img = PNG.sync.read(b);
-    if (img.width * img.height > MAX_MEGAPIXELS * 1_000_000) return null;
-    return { width: img.width, height: img.height, data: img.data };
-  } catch {
-    return null;
-  }
-}
-
-/** A fresh PNG carries only IHDR, IDAT and IEND: no text, EXIF or time chunks. */
-function encodePng(img: Pixels): Buffer {
-  const out = new PNG({ width: img.width, height: img.height });
-  out.data.set(img.data);
-  return PNG.sync.write(out);
-}
+const SHARP_FORMAT: Record<'image/jpeg' | 'image/png', string> = {
+  'image/jpeg': 'jpeg',
+  'image/png': 'png',
+};
 
 export interface CleanFile {
   type: AllowedType;
@@ -89,18 +39,39 @@ export interface CleanFile {
   thumbnail: Buffer | null;
 }
 
+async function cleanImage(b: Buffer, type: 'image/jpeg' | 'image/png'): Promise<CleanFile | null> {
+  const open = () => sharp(b, { limitInputPixels: MAX_PIXELS, failOn: 'error', pages: 1 });
+  try {
+    // Header only: format and size, before anything is decoded.
+    const meta = await open().metadata();
+    if (meta.format !== SHARP_FORMAT[type] || !meta.width || !meta.height) return null;
+    if (meta.width * meta.height > MAX_PIXELS) return null;
+    // `rotate()` applies the EXIF orientation to the pixels, since the tag itself is dropped.
+    const image = open().rotate();
+    const bytes = await (
+      type === 'image/jpeg' ? image.jpeg({ quality: JPEG_QUALITY, mozjpeg: true }) : image.png()
+    ).toBuffer();
+    // A small JPEG for list and approval cards: loading cards never fetches, or audits, the full
+    // photo (BUG-110).
+    const thumbnail = await open()
+      .rotate()
+      .resize(THUMB_EDGE, THUMB_EDGE, { fit: 'inside', withoutEnlargement: true })
+      .flatten({ background: '#ffffff' })
+      .jpeg({ quality: 70 })
+      .toBuffer();
+    return { type, bytes, thumbnail };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Sniffs and cleans an upload; null when it is not an allowed, decodable file. PDFs are kept as
  * uploaded (they are not rendered by the app and are served as downloads, never inline).
  */
-export function cleanUpload(b: Buffer): CleanFile | null {
+export async function cleanUpload(b: Buffer): Promise<CleanFile | null> {
   const type = sniffType(b);
   if (type === 'application/pdf') return { type, bytes: b, thumbnail: null };
-  const img = type === 'image/jpeg' ? decodeJpeg(b) : type === 'image/png' ? decodePng(b) : null;
-  if (!type || !img) return null;
-  const bytes =
-    type === 'image/jpeg'
-      ? jpeg.encode({ width: img.width, height: img.height, data: img.data }, JPEG_QUALITY).data
-      : encodePng(img);
-  return { type, bytes, thumbnail: thumbnailOf(img) };
+  if (!type) return null;
+  return cleanImage(b, type);
 }

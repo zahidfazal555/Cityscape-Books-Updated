@@ -131,7 +131,9 @@ export function apiUpload(
 async function authenticated(req: NextRequest): Promise<Actor> {
   const token = req.cookies.get(COOKIE.access)?.value ?? bearer(req);
   if (!token) throw new DomainError('UNAUTHENTICATED', 'Please sign in.');
-  const { actor } = await services().auth.authenticate(token);
+  // The notification poll marks itself: it must not count as activity (BUG-163).
+  const background = req.headers.get('x-csd-background') === '1';
+  const { actor } = await services().auth.authenticate(token, { background });
   limits.api.take(actor.userId);
   return actor;
 }
@@ -254,6 +256,27 @@ export function trustedIp(forwardedFor: string | null, trusted: number): string 
     .filter(Boolean);
   if (trusted === 0 || hops.length < trusted) return null;
   return parseIp(hops[hops.length - trusted] ?? '');
+}
+
+/**
+ * The per-IP rate-limit key. An IPv6 client usually controls a whole /64, so IPv6 addresses are
+ * keyed by that prefix (BUG-185); IPv4-mapped IPv6 counts as the IPv4 address.
+ */
+export function ipKey(ip: string | null): string {
+  if (!ip) return 'ip:unknown';
+  if (isIP(ip) !== 6) return `ip:${ip}`;
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+  if (mapped?.[1]) return `ip:${mapped[1]}`;
+  const [head = '', tail = ''] = ip.toLowerCase().split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const groups = ip.includes('::')
+    ? [...left, ...Array<string>(8 - left.length - right.length).fill('0'), ...right]
+    : left;
+  return `ip6:${groups
+    .slice(0, 4)
+    .map((g) => g.replace(/^0+(?=.)/, ''))
+    .join(':')}::/64`;
 }
 
 export function clientInfo(req: NextRequest): ClientInfo {

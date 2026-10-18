@@ -15,7 +15,7 @@ import { MODE_LABEL } from '@/lib/sales';
 import { SecureImage } from '@/components/purchases/secure-image';
 import { PhotoLightbox } from '../expenses/expenses-view';
 
-type Tab = 'expenses' | 'payments' | 'discounts';
+type Tab = 'expenses' | 'payments' | 'payroll' | 'rates' | 'discounts';
 
 /** Entries dated on or before the lock date cannot post; they can only be rejected (BUG-113). */
 const isLocked = (date: string, lockDate: string | null) => lockDate !== null && date <= lockDate;
@@ -42,7 +42,7 @@ export function ApprovalsView({
       () =>
         apiFetch<{ failed: { id: string; message: string }[] }>('/api/v1/expenses/approve-bulk', {
           method: 'POST',
-          body: { ids: approvable.map((e) => e.id) },
+          body: { items: approvable.map((e) => ({ id: e.id, version: e.version })) },
         }),
       (r) => {
         const failed = (r as { failed: { message: string }[] }).failed;
@@ -51,12 +51,15 @@ export function ApprovalsView({
           setError(`${failed.length} could not be approved: ${failed[0]?.message ?? ''}`);
       },
     );
+  const pr = queue.payroll;
   const counts = {
     expenses: queue.expenses.length,
     payments: queue.payments.length,
+    payroll: pr.runs.length + pr.advances.length + pr.payments.length,
+    rates: queue.rateChanges.length,
     discounts: queue.discounts.length,
   };
-  const empty = counts.expenses + counts.payments + counts.discounts === 0;
+  const empty = Object.values(counts).every((n) => n === 0);
   return (
     <>
       <PageHeader
@@ -78,6 +81,8 @@ export function ApprovalsView({
           options={[
             { value: 'expenses', label: `Expenses · ${counts.expenses}` },
             { value: 'payments', label: `Payments · ${counts.payments}` },
+            { value: 'payroll', label: `Payroll · ${counts.payroll}` },
+            { value: 'rates', label: `Rate changes · ${counts.rates}` },
             { value: 'discounts', label: `Discounts · ${counts.discounts}` },
           ]}
         />
@@ -94,7 +99,12 @@ export function ApprovalsView({
                 locked={isLocked(e.txnDate, lockDate)}
                 onPhoto={() => setPhoto(e)}
                 onApprove={() =>
-                  run(() => apiFetch(`/api/v1/expenses/${e.id}/approve`, { method: 'POST' }))
+                  run(() =>
+                    apiFetch(`/api/v1/expenses/${e.id}/approve`, {
+                      method: 'POST',
+                      body: { version: e.version },
+                    }),
+                  )
                 }
                 onReject={() => reject(`/api/v1/expenses/${e.id}/reject`)}
               />
@@ -112,6 +122,39 @@ export function ApprovalsView({
                 }
                 onReject={() => reject(`/api/v1/vendor-payments/${p.id}/reject`)}
               />
+            ))
+          : null}
+        {tab === 'payroll' ? (
+          <PayrollCards queue={queue} lockDate={lockDate} busy={busy} run={run} reject={reject} />
+        ) : null}
+        {tab === 'rates'
+          ? queue.rateChanges.map((r) => (
+              <article
+                key={r.id}
+                className="flex flex-col gap-1 rounded-lg border border-line bg-white p-4 text-[13px]"
+              >
+                <div className="num text-[18px] font-semibold">
+                  {rupees(r.oldValue)} → {rupees(r.newValue)}
+                </div>
+                <div>
+                  {RATE_LABEL[r.field]} · {r.targetName}
+                  {r.projectCode ? ` · ${r.projectCode}` : ''}
+                  {r.tdsRate !== null ? ` · TDS u/s 194C ${r.tdsRate}%` : ''}
+                </div>
+                <div className="text-xs text-subtle">
+                  {r.submittedBy ?? 'Someone'} · entered {istDateTime(r.submittedAt)}
+                </div>
+                <Decide
+                  busy={busy}
+                  locked={false}
+                  onApprove={() =>
+                    run(() =>
+                      apiFetch(`/api/v1/payroll/rate-changes/${r.id}/approve`, { method: 'POST' }),
+                    )
+                  }
+                  onReject={() => reject(`/api/v1/payroll/rate-changes/${r.id}/reject`)}
+                />
+              </article>
             ))
           : null}
         {tab === 'discounts'
@@ -133,7 +176,10 @@ export function ApprovalsView({
                     disabled={busy}
                     onClick={() =>
                       run(() =>
-                        apiFetch(`/api/v1/quotations/${q.id}/approve-discount`, { method: 'POST' }),
+                        apiFetch(`/api/v1/quotations/${q.id}/approve-discount`, {
+                          method: 'POST',
+                          body: { version: q.version },
+                        }),
                       )
                     }
                   >
@@ -277,5 +323,108 @@ function PaymentCard({
       </div>
       <Decide busy={busy} locked={locked} onApprove={onApprove} onReject={onReject} />
     </article>
+  );
+}
+
+const RATE_LABEL = {
+  monthly_gross: 'Monthly salary',
+  daily_rate: 'Daily rate',
+  job_value: 'Contract job value',
+} as const;
+
+const MONTH = new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+
+/** Approvals → Payroll (H2): payroll runs, salary advances, wage and contractor payments. */
+function PayrollCards({
+  queue,
+  lockDate,
+  busy,
+  run,
+  reject,
+}: {
+  queue: ApprovalQueue;
+  lockDate: string | null;
+  busy: boolean;
+  run: (fn: () => Promise<unknown>) => Promise<void>;
+  reject: (url: string) => void;
+}) {
+  const post = (url: string) => run(() => apiFetch(url, { method: 'POST' }));
+  const card = 'flex flex-col gap-1 rounded-lg border border-line bg-white p-4 text-[13px]';
+  return (
+    <>
+      {queue.payroll.runs.map((r) => (
+        <article key={r.id} className={card}>
+          <div className="num text-[18px] font-semibold">{rupees(r.totals.net)} net</div>
+          <div>
+            Payroll for {MONTH.format(new Date(`${r.period}-01T00:00:00Z`))} · {r.staff} staff ·{' '}
+            <Link href={`/payroll/runs/${r.id}`} className="text-primary">
+              payslips
+            </Link>
+          </div>
+          <div className="text-muted">
+            Gross {rupees(r.totals.gross)} · TDS {rupees(r.totals.tds)} · PT {rupees(r.totals.pt)} ·
+            recovery {rupees(r.totals.recovery)} · {MODE_LABEL[r.mode]}
+          </div>
+          <div className="text-xs text-subtle">
+            {r.submittedBy ?? 'Someone'} · pay date {formatDate(r.payDate)} · entered{' '}
+            {istDateTime(r.submittedAt)}
+          </div>
+          <Decide
+            busy={busy}
+            locked={isLocked(r.payDate, lockDate)}
+            onApprove={() => void post(`/api/v1/payroll/runs/${r.id}/approve`)}
+            onReject={() => reject(`/api/v1/payroll/runs/${r.id}/reject`)}
+          />
+        </article>
+      ))}
+      {queue.payroll.advances.map((a) => (
+        <article key={a.id} className={card}>
+          <div className="num text-[18px] font-semibold">{rupees(a.amount)}</div>
+          <div>Salary advance to {a.employeeName}</div>
+          <div className="text-muted">
+            {MODE_LABEL[a.mode]}
+            {a.reference ? ` · ${a.reference}` : ''}
+          </div>
+          <div className="text-xs text-subtle">
+            {a.submittedBy ?? 'Someone'} · {formatDate(a.advDate)} · entered{' '}
+            {istDateTime(a.submittedAt)}
+          </div>
+          <Decide
+            busy={busy}
+            locked={isLocked(a.advDate, lockDate)}
+            onApprove={() => void post(`/api/v1/payroll/advances/${a.id}/approve`)}
+            onReject={() => reject(`/api/v1/payroll/advances/${a.id}/reject`)}
+          />
+        </article>
+      ))}
+      {queue.payroll.payments.map((p) => {
+        const base =
+          p.kind === 'wage' ? '/api/v1/labour/wages' : '/api/v1/labour/contract-payments';
+        return (
+          <article key={p.id} className={card}>
+            <div className="num text-[18px] font-semibold">{rupees(p.amount)}</div>
+            <div>
+              {p.kind === 'wage' ? 'Wages to' : 'Contractor payment to'} {p.payee} · {p.detail} ·{' '}
+              {p.projectCode}
+            </div>
+            <div className="text-muted">
+              {MODE_LABEL[p.mode]}
+              {p.reference ? ` · ${p.reference}` : ''}
+              {p.tds > 0 ? ` · TDS ${rupees(p.tds)}` : ''}
+            </div>
+            <div className="text-xs text-subtle">
+              {p.submittedBy ?? 'Someone'} · {formatDate(p.payDate)} · entered{' '}
+              {istDateTime(p.submittedAt)}
+            </div>
+            <Decide
+              busy={busy}
+              locked={isLocked(p.payDate, lockDate)}
+              onApprove={() => void post(`${base}/${p.id}/approve`)}
+              onReject={() => reject(`${base}/${p.id}/reject`)}
+            />
+          </article>
+        );
+      })}
+    </>
   );
 }
