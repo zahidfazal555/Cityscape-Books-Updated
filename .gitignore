@@ -13,3 +13,5 @@ test-results/
 *.pem
 *.key
 backups/
+apps/web/next-env.d.ts
+*.tsbuildinfo

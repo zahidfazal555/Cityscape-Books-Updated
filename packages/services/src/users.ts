@@ -2,6 +2,7 @@ import {
   DomainError,
   MODULES,
   assertId,
+  authorize,
   hasCustomRights,
   roleTemplate,
   validateRights,
@@ -14,6 +15,7 @@ import type pg from 'pg';
 import { z } from 'zod';
 import { revokeUserSessions, type AuthService } from './auth.js';
 import type { MailMessage } from './mailer.js';
+import { isUniqueViolation, parse, tenantOf as ctx } from './validation.js';
 
 /** Users & security is owner-only and cannot be granted (Tech Spec §5). */
 export function assertOwner(actor: Actor): void {
@@ -59,15 +61,6 @@ export interface UserRow {
   lastLoginAt: Date | null;
   accessExpiresAt: Date | null;
   invitePending: boolean;
-}
-
-function parse<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
-  const result = schema.safeParse(input);
-  if (!result.success) {
-    const issue = result.error.issues[0];
-    throw new DomainError('VALIDATION', issue?.message ?? 'Check the form.', issue?.path.join('.'));
-  }
-  return result.data;
 }
 
 interface Resolved {
@@ -150,6 +143,34 @@ export class UsersService {
     private readonly pool: pg.Pool,
     private readonly auth: AuthService,
   ) {}
+
+  /** The caller's own profile. No module right needed: it is only their own data. */
+  async me(actor: Actor): Promise<{ name: string; email: string }> {
+    if (!actor.active) throw new DomainError('UNAUTHENTICATED', 'Please sign in again.');
+    return withTenant(this.pool, ctx(actor), async (c) => {
+      const { rows } = await c.query<{ name: string; email: string }>(
+        'SELECT name, email FROM app_user WHERE id = $1',
+        [actor.userId],
+      );
+      const me = rows[0];
+      if (!me) throw new DomainError('UNAUTHENTICATED', 'Please sign in again.');
+      return me;
+    });
+  }
+
+  /**
+   * Active team members who can be a project's manager or engineer: name and role only, for
+   * anyone who may view projects. (The full user list stays owner-only.)
+   */
+  async team(actor: Actor): Promise<{ id: string; name: string; role: Role }[]> {
+    authorize(actor, 'projects', 'view');
+    return withTenant(this.pool, ctx(actor), async (c) => {
+      const { rows } = await c.query<{ id: string; name: string; role: Role }>(
+        `SELECT id, name, role FROM app_user WHERE is_active AND role <> 'auditor' ORDER BY name`,
+      );
+      return rows;
+    });
+  }
 
   async list(actor: Actor): Promise<UserRow[]> {
     assertOwner(actor);
@@ -333,15 +354,6 @@ export class UsersService {
     });
     this.auth.sendAfterCommit([mail]);
   }
-}
-
-const ctx = (actor: Actor): { companyId: string; userId: string } => ({
-  companyId: actor.companyId,
-  userId: actor.userId,
-});
-
-function isUniqueViolation(e: unknown): boolean {
-  return (e as { code?: string }).code === '23505';
 }
 
 async function getUser(

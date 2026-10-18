@@ -8,6 +8,8 @@ import {
   hasCustomRights,
   projectScope,
   requiresApproval,
+  canApprove,
+  assertApprover,
   roleTemplate,
   stripPnl,
   validateRights,
@@ -112,11 +114,14 @@ describe('rights editing', () => {
 });
 
 describe('approvals (H2) and P&L stripping', () => {
-  it('everyone except approvers saves Pending', () => {
+  it('BUG-098: everyone except the Owner saves Pending, even with approvals = full; only the Owner approves', () => {
     expect(requiresApproval(actor('owner'))).toBe(false);
     expect(requiresApproval(actor('admin'))).toBe(true);
     const delegated = actor('admin', { rights: { ...roleTemplate('admin'), approvals: 'full' } });
-    expect(requiresApproval(delegated)).toBe(false);
+    expect(requiresApproval(delegated)).toBe(true);
+    expect(canApprove(delegated)).toBe(false);
+    expect(() => assertApprover(delegated)).toThrow('Only the owner');
+    expect(canApprove(actor('owner'))).toBe(true);
   });
 
   it('removes profit fields at any depth without pnl', () => {

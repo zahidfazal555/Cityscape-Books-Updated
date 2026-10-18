@@ -38,7 +38,16 @@ export default tseslint.config(
     },
   },
   {
-    files: ['**/test/**/*.ts'],
+    // UI components: each JSX conditional counts as a branch. Business rules stay at 10 (they
+    // live in packages/core and packages/services, never in components).
+    files: ['apps/web/src/**/*.tsx'],
+    rules: {
+      complexity: ['error', 20],
+      'max-lines-per-function': ['warn', { max: 200, skipBlankLines: true, skipComments: true }],
+    },
+  },
+  {
+    files: ['**/test/**/*.ts', '**/e2e/**/*.ts'],
     rules: { 'max-lines-per-function': 'off', '@typescript-eslint/no-non-null-assertion': 'off' },
   },
 );

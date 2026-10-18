@@ -1,4 +1,4 @@
-import { DomainError, parseIsoDate, todayIn, type Actor, type IsoDate } from '@csd/core';
+import { DomainError, can, parseIsoDate, todayIn, type Actor, type IsoDate } from '@csd/core';
 import { withTenant, writeAudit } from '@csd/db';
 import type pg from 'pg';
 import { assertOwner } from './users.js';
@@ -12,10 +12,68 @@ export interface CompanySettings {
   requireBillAttachment: boolean;
 }
 
+export interface Letterhead {
+  name: string;
+  legalName: string | null;
+  gstin: string | null;
+  stateCode: string;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  bankName: string | null;
+  bankAccount: string | null;
+  bankIfsc: string | null;
+  bankBranch: string | null;
+}
+
+/** Printed documents: sales, and purchase orders and bills (BUG-116). */
+const SALES_DOCS = ['quotes', 'proformas', 'invoices', 'receipts', 'pos', 'bills'] as const;
+
 export class SettingsService {
   constructor(private readonly pool: pg.Pool) {}
 
+  /** What every signed-in user may see: company name, lock date and FY (header, nav, dates). */
+  async companyInfo(
+    actor: Actor,
+  ): Promise<Pick<CompanySettings, 'name' | 'lockDate' | 'fyStartMonth' | 'stateCode' | 'gstin'>> {
+    if (!actor.active) throw new DomainError('UNAUTHENTICATED', 'Please sign in again.');
+    const { name, lockDate, fyStartMonth, stateCode, gstin } = await this.read(actor);
+    // The GST state drives CGST+SGST vs IGST previews on every form (BUG-116); the GSTIN
+    // decides whether a GSTR-1 file can be produced (BUG-138).
+    return { name, lockDate, fyStartMonth, stateCode, gstin };
+  }
+
+  /**
+   * What is printed on quotations, proformas, invoices and receipts. Anyone who can view one of
+   * those documents can read it (bank details are printed for the client to pay into).
+   */
+  async letterhead(actor: Actor): Promise<Letterhead> {
+    if (!SALES_DOCS.some((m) => can(actor, m, 'view')))
+      throw new DomainError('FORBIDDEN', 'You do not have access to sales documents.');
+    return withTenant(
+      this.pool,
+      { companyId: actor.companyId, userId: actor.userId },
+      async (c) => {
+        const { rows } = await c.query<Letterhead>(
+          `SELECT name, legal_name AS "legalName", gstin, state_code AS "stateCode", address, phone, email::text,
+                  bank_name AS "bankName", bank_acc AS "bankAccount", bank_ifsc AS "bankIfsc",
+                  bank_branch AS "bankBranch"
+             FROM company`,
+        );
+        const r = rows[0];
+        if (!r) throw new DomainError('NOT_FOUND', 'Company not found.');
+        return r;
+      },
+    );
+  }
+
+  /** Full company settings: Users & security is owner-only. */
   async get(actor: Actor): Promise<CompanySettings> {
+    assertOwner(actor);
+    return this.read(actor);
+  }
+
+  private async read(actor: Actor): Promise<CompanySettings> {
     return withTenant(
       this.pool,
       { companyId: actor.companyId, userId: actor.userId },
