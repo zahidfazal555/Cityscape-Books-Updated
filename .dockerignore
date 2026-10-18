@@ -1,0 +1,21 @@
+# Secrets never enter the build context (BUG-174): any .env file at any depth, keys, certificates,
+# dumps and local tooling state. Only .env.example (placeholders) is allowed.
+**/.env
+**/.env.*
+!.env.example
+**/*.env
+**/*.pem
+**/*.key
+**/*.crt
+**/*.p12
+backups/
+**/*.dump
+**/*.sql.gz
+.claude
+**/node_modules
+**/.next
+**/test-results
+**/playwright-report
+**/coverage
+.git
+docs

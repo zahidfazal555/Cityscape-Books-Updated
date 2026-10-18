@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DomainError,
+  GST_RATES,
   gstinCheckChar,
   splitTax,
   taxInInclusive,
@@ -68,5 +69,13 @@ describe('GST split (FR-3.2.1, UAT 4)', () => {
     expect(taxInInclusive(118_000_00, 18)).toBe(18_000_00);
     expect(taxInInclusive(112_000_00, 12)).toBe(12_000_00);
     expect(taxInInclusive(50_000_00, 0)).toBe(0);
+  });
+});
+
+describe('final review regressions (GST)', () => {
+  it('BUG-197: the 40% slab is accepted and splits like any other rate', () => {
+    expect(GST_RATES).toContain(40);
+    expect(splitTax(100_000_00, 40, '33')).toMatchObject({ cgst: 20_000_00, sgst: 20_000_00 });
+    expect(splitTax(100_000_00, 40, '29')).toMatchObject({ igst: 40_000_00 });
   });
 });

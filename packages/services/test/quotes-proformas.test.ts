@@ -176,10 +176,12 @@ describe('quotation rules', () => {
     const q = await quotes.create(manager, quoteInput(clientId, { discountPct: 5 }));
     expect((await quotes.get(manager, q.id)).discountApproved).toBe(false);
     await expect(quotes.send(manager, q.id)).rejects.toMatchObject({ code: 'CONFLICT' });
-    await expect(quotes.approveDiscount(manager, q.id)).rejects.toMatchObject({
+    await expect(
+      quotes.approveDiscount(manager, q.id, { version: (await quotes.get(owner, q.id)).version }),
+    ).rejects.toMatchObject({
       code: 'FORBIDDEN',
     });
-    await quotes.approveDiscount(owner, q.id);
+    await quotes.approveDiscount(owner, q.id, { version: (await quotes.get(owner, q.id)).version });
     // Raising an approved discount needs approval again; keeping it does not.
     const v = await quotes.get(manager, q.id);
     await quotes.update(manager, q.id, {
@@ -192,9 +194,24 @@ describe('quotation rules', () => {
       version: v.version + 1,
     });
     expect((await quotes.get(manager, q.id)).discountApproved).toBe(false);
-    await quotes.approveDiscount(owner, q.id);
+    await quotes.approveDiscount(owner, q.id, { version: (await quotes.get(owner, q.id)).version });
     await quotes.send(manager, q.id);
     expect((await quotes.get(manager, q.id)).status).toBe('sent');
+  });
+
+  it('BUG-184: a discount raised after the Owner opened the queue is not approved', async () => {
+    const { clientId } = await clientProject(owner);
+    const q = await quotes.create(manager, quoteInput(clientId, { discountPct: 5 }));
+    const queued = (await quotes.pendingDiscounts(owner)).find((x) => x.id === q.id);
+    expect(queued).toMatchObject({ discountPct: 5 });
+    await quotes.update(manager, q.id, {
+      ...quoteInput(clientId, { discountPct: 40 }),
+      version: queued!.version,
+    });
+    await expect(
+      quotes.approveDiscount(owner, q.id, { version: queued!.version }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect((await quotes.get(owner, q.id)).discountApproved).toBe(false);
   });
 
   it('a sent quote past valid-till shows Expired and cannot be accepted until revised', async () => {
@@ -544,7 +561,7 @@ describe('review regressions (PR 7)', () => {
       { description: 'Shelf', qtyMilli: 1000, unit: 'nos', rate: 1_000_00, gstRate: 18 },
     ];
     const q = await quotes.create(manager, quoteInput(clientId, { discountPct: 20, lines: small }));
-    await quotes.approveDiscount(owner, q.id);
+    await quotes.approveDiscount(owner, q.id, { version: (await quotes.get(owner, q.id)).version });
     const v = await quotes.get(manager, q.id);
     await quotes.update(manager, q.id, {
       ...quoteInput(clientId, {
@@ -604,5 +621,23 @@ describe('review regressions (PR 7)', () => {
     await expect(
       proformas.fromQuote(noQuotes, q.id, { pct: 30, pfDate: '2026-10-03', dueDate: '2026-10-10' }),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+});
+
+describe('final review regressions (proformas)', () => {
+  it('BUG-193: a proforma dated in a locked period cannot be sent or cancelled', async () => {
+    const { projectId } = await clientProject(owner);
+    const pf = await proformas.create(owner, {
+      projectId,
+      stage: 'Advance',
+      pfDate: '2026-10-01',
+      dueDate: '2026-10-10',
+      lines: [{ description: 'Advance', qtyMilli: 1000, rate: 10_000_00 }],
+    });
+    await setLock(f.companyId, '2026-10-05');
+    await expect(proformas.send(owner, pf.id)).rejects.toMatchObject({ code: 'PERIOD_LOCKED' });
+    await expect(proformas.cancel(owner, pf.id)).rejects.toMatchObject({ code: 'PERIOD_LOCKED' });
+    await setLock(f.companyId, null);
+    await proformas.cancel(owner, pf.id);
   });
 });
