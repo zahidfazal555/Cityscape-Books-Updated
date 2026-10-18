@@ -2,7 +2,8 @@ import { mulDivHalfUp, percentOf, toBasisPoints, type Paise } from './money.js';
 
 export const COMPANY_STATE_CODE = '33';
 export const DEFAULT_SAC = '9954';
-export const GST_RATES = [0, 5, 12, 18, 28] as const;
+/** 40% is the slab in force from 22 Sep 2025; 12% and 28% stay for earlier documents (BUG-197). */
+export const GST_RATES = [0, 5, 12, 18, 28, 40] as const;
 export type GstRate = (typeof GST_RATES)[number];
 
 export interface TaxSplit {
