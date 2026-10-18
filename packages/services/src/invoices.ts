@@ -128,6 +128,12 @@ export interface InvoiceDetail extends InvoiceSummary {
     reference: string | null;
   }[];
   creditNote: { number: string; date: IsoDate; reason: string } | null;
+  /** Proforma advances moved onto this invoice on conversion (part of `received`). */
+  appliedAdvances: Paise;
+  /** Edit is allowed: not cancelled and nothing received (README §5). */
+  editable: boolean;
+  /** Cancel is allowed: not cancelled and no receipts of its own (applied advances are released). */
+  cancellable: boolean;
 }
 
 /**
@@ -324,26 +330,62 @@ export async function issueInvoiceTx(
   return { id, number, totals };
 }
 
+export interface InvoiceFilter {
+  projectId?: string | undefined;
+  status?: InvoiceStatus | undefined;
+  /** Only invoices a receipt can still be recorded against (not cancelled, balance due). */
+  open?: boolean | undefined;
+}
+
+async function listRows(
+  c: pg.PoolClient,
+  actor: Actor,
+  filter: InvoiceFilter,
+  limit: number,
+): Promise<InvoiceSummary[]> {
+  const { rows } = await c.query<SummaryRow>(
+    `SELECT * FROM (${WITH_STATUS}) s
+      WHERE ($2::uuid[] IS NULL OR s.project_id = ANY($2::uuid[]))
+        AND ($3::uuid IS NULL OR s.project_id = $3)
+        AND ($4::text IS NULL OR s.status = $4)
+        AND (NOT $5 OR (s.status <> 'cancelled' AND s.balance::numeric > 0))
+      ORDER BY s.invoice_date DESC, s.number DESC LIMIT $6`,
+    [
+      todayIn(),
+      projectScope(actor),
+      filter.projectId ?? null,
+      filter.status ?? null,
+      filter.open ?? false,
+      limit,
+    ],
+  );
+  return rows.map(toSummary);
+}
+
 /** Tax invoices and credit notes (Req §5, FR-3.3.4, UAT 4/5). */
 export class InvoicesService {
   constructor(private readonly pool: pg.Pool) {}
 
-  async list(
-    actor: Actor,
-    filter: { projectId?: string | undefined; status?: InvoiceStatus | undefined } = {},
-  ): Promise<InvoiceSummary[]> {
+  async list(actor: Actor, filter: InvoiceFilter = {}): Promise<InvoiceSummary[]> {
     authorize(actor, 'invoices', 'view');
-    const scope = projectScope(actor);
+    return withTenant(this.pool, ctx(actor), (c) => listRows(c, actor, filter, 500));
+  }
+
+  /**
+   * Every matching invoice for a CSV download. ENGINEERING-STANDARDS H4: an export writes an
+   * audit row (who, what filter, how many rows) in the same transaction as the read.
+   */
+  async export(actor: Actor, filter: InvoiceFilter = {}): Promise<InvoiceSummary[]> {
+    authorize(actor, 'invoices', 'view');
     return withTenant(this.pool, ctx(actor), async (c) => {
-      const { rows } = await c.query<SummaryRow>(
-        `SELECT * FROM (${WITH_STATUS}) s
-          WHERE ($2::uuid[] IS NULL OR s.project_id = ANY($2::uuid[]))
-            AND ($3::uuid IS NULL OR s.project_id = $3)
-            AND ($4::text IS NULL OR s.status = $4)
-          ORDER BY s.invoice_date DESC, s.number DESC LIMIT 500`,
-        [todayIn(), scope, filter.projectId ?? null, filter.status ?? null],
-      );
-      return rows.map(toSummary);
+      const rows = await listRows(c, actor, filter, 50_000);
+      await writeAudit(c, {
+        action: 'export',
+        entity: 'invoice',
+        entityId: null,
+        after: { format: 'csv', filter, rows: rows.length },
+      });
+      return rows;
     });
   }
 
@@ -525,7 +567,17 @@ export class InvoicesService {
     // Out-of-scope invoices are not found (FR-2.4.2), whatever the rights.
     if (!r || !can(actor, 'invoices', 'view', r.project_id))
       throw new DomainError('NOT_FOUND', 'Invoice not found.');
-    return { ...toSummary(r), ...detailFields(r), ...(await children(c, id)) };
+    const summary = toSummary(r);
+    const advances = await appliedAdvances(c, id);
+    const live = summary.status !== 'cancelled';
+    return {
+      ...summary,
+      ...detailFields(r),
+      ...(await children(c, id)),
+      appliedAdvances: advances,
+      editable: live && summary.received === 0,
+      cancellable: live && summary.received <= advances,
+    };
   }
 }
 
@@ -667,6 +719,13 @@ async function releaseAdvances(
       { accountCode: '2100', credit: amount, contactId: inv.clientId, projectId: inv.projectId },
     ],
   });
+  // The release is dated on the credit note: GST reports the advance again in that month (BUG-120).
+  await c.query(
+    `INSERT INTO advance_event (company_id, allocation_id, kind, event_date, invoice_id)
+     SELECT app_company_id(), id, 'released', $2, $1 FROM receipt_allocation
+      WHERE invoice_id = $1 AND applied_at IS NOT NULL`,
+    [inv.id, cn.cnDate],
+  );
   await c.query(
     `UPDATE receipt_allocation SET invoice_id = NULL, applied_at = NULL
       WHERE invoice_id = $1 AND applied_at IS NOT NULL`,

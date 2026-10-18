@@ -6,6 +6,7 @@ import { navFor } from '@/lib/nav';
 export function SideNav({ actor, lockDate }: { actor: Actor; lockDate: IsoDate | null }) {
   return (
     <nav
+      data-noprint
       aria-label="Main"
       className="sticky top-14 flex h-[calc(100vh-56px)] w-[220px] shrink-0 flex-col overflow-y-auto border-r border-line bg-white px-3 py-4"
     >

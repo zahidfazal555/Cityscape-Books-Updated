@@ -85,6 +85,9 @@ export interface ProformaSummary {
 
 export interface ProformaDetail extends ProformaSummary {
   version: number;
+  /** The client's GSTIN and address as they stand now, for the printed bill-to. */
+  clientGstin: string | null;
+  clientAddress: string | null;
   placeOfSupply: string;
   lines: DocLine[];
   totals: DocumentTotals;
@@ -162,7 +165,12 @@ export class ProformasService {
 
   async list(
     actor: Actor,
-    filter: { status?: ProformaStatus | undefined; projectId?: string | undefined } = {},
+    filter: {
+      status?: ProformaStatus | undefined;
+      projectId?: string | undefined;
+      /** Only proformas an advance can still be recorded against. */
+      open?: boolean | undefined;
+    } = {},
   ): Promise<ProformaSummary[]> {
     authorize(actor, 'proformas', 'view');
     const scope = projectScope(actor);
@@ -171,8 +179,9 @@ export class ProformasService {
         `SELECT * FROM (${WITH_STATUS}) s
           WHERE ($2::uuid[] IS NULL OR s.project_id = ANY($2::uuid[]))
             AND ($3::text IS NULL OR s.status = $3) AND ($4::uuid IS NULL OR s.project_id = $4)
+            AND (NOT $5 OR (s.status NOT IN ('converted', 'cancelled') AND s.balance::numeric > 0))
           ORDER BY s.pf_date DESC, s.number DESC LIMIT 500`,
-        [todayIn(), scope, filter.status ?? null, filter.projectId ?? null],
+        [todayIn(), scope, filter.status ?? null, filter.projectId ?? null, filter.open ?? false],
       );
       return rows.map(toSummary);
     });
@@ -267,6 +276,8 @@ export class ProformasService {
       const pf = await this.load(c, actor, id, true);
       authorize(actor, 'proformas', 'edit', pf.projectId);
       if (pf.status !== 'draft') throw new DomainError('CONFLICT', 'Only a draft can be sent.');
+      // FR-3.3.1: nothing dated in a locked period changes, status included (BUG-193).
+      assertNotLocked(pf.pfDate, (await companyRow(c)).lock_date, 'pfDate');
       await c.query(
         `UPDATE proforma SET status = 'sent', version = version + 1, updated_by = app_user_id() WHERE id = $1`,
         [id],
@@ -283,6 +294,7 @@ export class ProformasService {
       const pf = await this.load(c, actor, id, true);
       authorize(actor, 'proformas', 'full', pf.projectId);
       assertChangeable(pf, 'cancelled');
+      assertNotLocked(pf.pfDate, (await companyRow(c)).lock_date, 'pfDate');
       await c.query(
         `UPDATE proforma SET status = 'cancelled', version = version + 1, updated_by = app_user_id() WHERE id = $1`,
         [id],
@@ -366,8 +378,16 @@ export class ProformasService {
   ): Promise<ProformaDetail> {
     // Lock first, then read: receipts and conversions see each other's committed advances.
     if (forUpdate) await c.query('SELECT 1 FROM proforma WHERE id = $1 FOR UPDATE', [id]);
-    const head = await c.query<SummaryRow & { version: number; place_of_supply: string }>(
-      `SELECT s.*, f.version, f.place_of_supply FROM (${WITH_STATUS}) s JOIN proforma f ON f.id = s.id
+    const head = await c.query<
+      SummaryRow & {
+        version: number;
+        place_of_supply: string;
+        client_gstin: string | null;
+        client_address: string | null;
+      }
+    >(
+      `SELECT s.*, f.version, f.place_of_supply, k.gstin AS client_gstin, k.address AS client_address
+         FROM (${WITH_STATUS}) s JOIN proforma f ON f.id = s.id JOIN contact k ON k.id = f.client_id
         WHERE s.id = $2`,
       [todayIn(), id],
     );
@@ -393,6 +413,8 @@ export class ProformasService {
     return {
       ...toSummary(r),
       version: r.version,
+      clientGstin: r.client_gstin,
+      clientAddress: r.client_address,
       placeOfSupply: r.place_of_supply,
       lines,
       totals: proformaTotals(lines, r.place_of_supply, company),
@@ -611,6 +633,12 @@ async function applyAdvances(
   await c.query(
     `UPDATE receipt_allocation SET invoice_id = $2, applied_at = $3 WHERE id = ANY($1::uuid[])`,
     [rows.map((r) => r.id), inv.id, invoiceDate],
+  );
+  // Dated history for GST Table 11B (BUG-120): past months never depend on today's row state.
+  await c.query(
+    `INSERT INTO advance_event (company_id, allocation_id, kind, event_date, invoice_id)
+     SELECT app_company_id(), id, 'applied', $2, $3 FROM unnest($1::uuid[]) AS id`,
+    [rows.map((r) => r.id), invoiceDate, inv.id],
   );
   const journalId = await postJournal(c, {
     txnDate: invoiceDate,

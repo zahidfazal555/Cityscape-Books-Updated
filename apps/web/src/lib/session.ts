@@ -9,7 +9,13 @@ import { services } from './server';
 export interface PageSession {
   actor: Actor;
   name: string;
-  company: { name: string; lockDate: IsoDate | null; fyStartMonth: number };
+  company: {
+    name: string;
+    lockDate: IsoDate | null;
+    fyStartMonth: number;
+    stateCode: string;
+    gstin: string | null;
+  };
 }
 
 /**

@@ -235,3 +235,68 @@ describe('second review regressions (db)', () => {
     });
   });
 });
+
+describe('final review regressions (database)', () => {
+  it('BUG-194: a lock-date change waits for a posting in flight', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let posted!: () => void;
+    const started = new Promise<void>((r) => (posted = r));
+    const posting = withTenant(appPool, ctx(), async (c) => {
+      await postJournal(c, pair('2026-10-14'));
+      posted();
+      await gate;
+    });
+    await started;
+    const owner = await appPool.connect();
+    try {
+      await owner.query('BEGIN');
+      await owner.query(`SELECT set_config('app.company_id', $1, true)`, [f.companyId]);
+      await owner.query(`SELECT set_config('app.user_id', $1, true)`, [f.ownerId]);
+      await owner.query(`SET LOCAL lock_timeout = '300ms'`);
+      await expect(
+        owner.query(`UPDATE company SET lock_date = '2026-10-31' WHERE id = $1`, [f.companyId]),
+      ).rejects.toMatchObject({ code: '55P03' });
+    } finally {
+      await owner.query('ROLLBACK');
+      owner.release();
+      release();
+      await posting;
+    }
+  });
+
+  it('BUG-195: the app role cannot delete sessions, masters, accounts or allocations', async () => {
+    for (const table of ['session', 'contact', 'project', 'account', 'receipt_allocation']) {
+      await expect(
+        withTenant(appPool, ctx(), (c) => c.query(`DELETE FROM ${table} WHERE false`)),
+      ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    }
+  });
+
+  it('BUG-196: a statement match cannot point at another company’s journal line', async () => {
+    const other = await makeCompany('Other Co');
+    const lineId = await withTenant(appPool, ctx(), async (c) => {
+      const id = await postJournal(c, pair('2026-10-14'));
+      const { rows } = await c.query<{ id: string }>(
+        `SELECT id FROM journal_line WHERE journal_id = $1 LIMIT 1`,
+        [id],
+      );
+      return rows[0]!.id;
+    });
+    // Even a role that bypasses row-level security is stopped by the key itself.
+    await expect(
+      superPool.query(
+        `INSERT INTO bank_match (journal_line_id, company_id, matched_by) VALUES ($1, $2, $3)`,
+        [lineId, other.companyId, other.ownerId],
+      ),
+    ).rejects.toMatchObject({ code: '23503' });
+  });
+
+  it('BUG-197: every GST rate check allows the 40% slab', async () => {
+    const { rows } = await superPool.query<{ def: string }>(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname LIKE '%gst_rate_check'`,
+    );
+    expect(rows).toHaveLength(6);
+    for (const r of rows) expect(r.def).toContain('40');
+  });
+});
