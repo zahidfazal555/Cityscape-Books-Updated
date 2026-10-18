@@ -25,7 +25,14 @@ export const PO_STATUSES = ['draft', 'issued', 'partly_billed', 'billed', 'cance
 /** Stored: draft, issued, cancelled. Partly billed / Billed are derived from linked bills. */
 export type PoStatus = (typeof PO_STATUSES)[number];
 
-const gstRate = z.union([z.literal(0), z.literal(5), z.literal(12), z.literal(18), z.literal(28)]);
+const gstRate = z.union([
+  z.literal(0),
+  z.literal(5),
+  z.literal(12),
+  z.literal(18),
+  z.literal(28),
+  z.literal(40),
+]);
 const poLine = lineSchema.omit({ gstRate: true });
 const poSchema = z.object({
   vendorId: z.string().uuid('Choose a vendor.'),
@@ -66,6 +73,8 @@ export interface PoSummary {
 
 export interface PoDetail extends PoSummary {
   version: number;
+  /** The vendor's registration now: an edit re-applies it (BUG-117). */
+  currentVendor: { gstin: string | null; stateCode: string };
   terms: string | null;
   lines: DocLine[];
   totals: DocumentTotals;
@@ -336,8 +345,8 @@ export class PurchaseOrdersService {
       throw new DomainError('NOT_FOUND', 'Purchase order not found.');
     const lines = await readDocLines(c, 'purchaseOrder', id);
     const company = await companyRow(c);
-    const vendorState = await c.query<{ state_code: string }>(
-      'SELECT state_code FROM contact WHERE id = $1',
+    const vendorState = await c.query<{ state_code: string; gstin: string | null }>(
+      'SELECT state_code, gstin FROM contact WHERE id = $1',
       [r.vendor_id],
     );
     const bills = await c.query<{
@@ -354,6 +363,7 @@ export class PurchaseOrdersService {
     return {
       ...toSummary(r),
       version: r.version,
+      currentVendor: currentOf(vendorState.rows[0], company.state_code),
       terms: r.terms,
       lines,
       totals: poTotals(
@@ -370,6 +380,13 @@ export class PurchaseOrdersService {
       })),
     };
   }
+}
+
+function currentOf(
+  v: { gstin: string | null; state_code: string } | undefined,
+  companyState: string,
+): { gstin: string | null; stateCode: string } {
+  return { gstin: v?.gstin ?? null, stateCode: v?.state_code ?? companyState };
 }
 
 function poTotals(lines: readonly DocLine[], vendorState: string, companyState: string) {

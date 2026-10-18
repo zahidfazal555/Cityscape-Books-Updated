@@ -54,11 +54,14 @@ export function Chips<T extends string>({
   value,
   onChange,
   label,
+  large = false,
 }: {
   options: readonly { value: T; label: string }[];
   value: T;
   onChange: (v: T) => void;
   label: string;
+  /** Touch size (≥ 44px) for the phone layout (README §17). */
+  large?: boolean;
 }) {
   return (
     <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-1.5">
@@ -69,7 +72,7 @@ export function Chips<T extends string>({
           role="radio"
           aria-checked={o.value === value}
           onClick={() => onChange(o.value)}
-          className={`h-[30px] rounded-[15px] border px-3 text-[13px] ${
+          className={`${large ? 'h-11 rounded-[22px] px-4 text-[14px]' : 'h-[30px] rounded-[15px] px-3 text-[13px]'} border ${
             o.value === value
               ? 'border-primary bg-primary-tint font-medium text-primary'
               : 'border-input bg-white text-body hover:bg-thead'

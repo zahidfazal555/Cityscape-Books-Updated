@@ -719,6 +719,13 @@ async function releaseAdvances(
       { accountCode: '2100', credit: amount, contactId: inv.clientId, projectId: inv.projectId },
     ],
   });
+  // The release is dated on the credit note: GST reports the advance again in that month (BUG-120).
+  await c.query(
+    `INSERT INTO advance_event (company_id, allocation_id, kind, event_date, invoice_id)
+     SELECT app_company_id(), id, 'released', $2, $1 FROM receipt_allocation
+      WHERE invoice_id = $1 AND applied_at IS NOT NULL`,
+    [inv.id, cn.cnDate],
+  );
   await c.query(
     `UPDATE receipt_allocation SET invoice_id = NULL, applied_at = NULL
       WHERE invoice_id = $1 AND applied_at IS NOT NULL`,

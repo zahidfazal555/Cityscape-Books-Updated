@@ -22,11 +22,11 @@ export function Field({
   );
 }
 
-export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
+export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className="h-9 rounded-md border border-input bg-white px-3 text-[13.5px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary-tint"
+      className={`rounded-md border border-input bg-white px-3 text-[13.5px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary-tint ${className ?? 'h-9'}`}
     />
   );
 }
