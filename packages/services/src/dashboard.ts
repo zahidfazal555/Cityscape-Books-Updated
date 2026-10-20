@@ -1,8 +1,10 @@
 import {
   AGEING_BUCKETS,
+  DomainError,
   CATEGORY_ACCOUNT,
   COST_CATEGORIES,
   ageingBucket,
+  assertId,
   authorize,
   can,
   canApprove,
@@ -14,6 +16,7 @@ import {
   type Actor,
   type AgeingBucket,
   type CostCategory,
+  type IsoDate,
   type Paise,
 } from '@csd/core';
 import { withTenant } from '@csd/db';
@@ -82,6 +85,20 @@ export class DashboardService {
     this.approvals = new ApprovalsService(pool);
   }
 
+  /** Drill-down behind one or more "Spend by category" slices. */
+  async spend(
+    actor: Actor,
+    categories: readonly CostCategory[],
+    projectId?: string,
+  ): Promise<SpendDetail> {
+    return spendDetail(this.pool, actor, categories, projectId);
+  }
+
+  /** The charts on a project page (spend split, budget and billing, six-month trend). */
+  async project(actor: Actor, projectId: string): Promise<ProjectCharts> {
+    return projectCharts(this.pool, actor, projectId);
+  }
+
   async summary(actor: Actor): Promise<Dashboard> {
     authorize(actor, 'dashboard', 'view');
     const waiting = canApprove(actor) ? await this.approvals.count(actor) : null;
@@ -112,6 +129,205 @@ export class DashboardService {
       ageing: data.receivables.buckets,
     };
   }
+}
+
+export interface SpendEntry {
+  date: IsoDate;
+  particulars: string;
+  category: CostCategory;
+  projectId: string;
+  projectCode: string;
+  amount: Paise;
+}
+
+/** What makes up a slice of "Spend by category": by project, by category, and the entries. */
+export interface SpendDetail {
+  categories: CostCategory[];
+  total: Paise;
+  byCategory: { category: CostCategory; amount: Paise }[];
+  byProject: { projectId: string; code: string; name: string; amount: Paise }[];
+  entries: SpendEntry[];
+  /** More entries exist than are listed; the totals above still cover all of them. */
+  truncated: boolean;
+}
+
+const ENTRY_LIMIT = 300;
+/** Wage, contract and salary postings name a person: only the payroll right sees who. */
+const PAYROLL_SOURCES = ['wage_payment', 'contract_payment', 'payroll_run'];
+
+/**
+ * Journals on the categories' cost accounts in the caller's scope. An edit or deletion posts a
+ * reversal of the same source; the pair nets to zero and is left out of the entry list.
+ */
+const SPEND_LINES = `
+  SELECT to_char(j.txn_date, 'YYYY-MM-DD') AS date, j.narration, j.source_type, a.code,
+         p.id AS project_id, p.code AS project_code, p.name AS project_name,
+         (sum(l.debit) - sum(l.credit))::text AS net
+    FROM journal_line l
+    JOIN journal j ON j.id = l.journal_id
+    JOIN account a ON a.id = l.account_id
+    JOIN project p ON p.id = l.project_id
+   WHERE a.code = ANY($1::text[])
+     AND ($2::uuid[] IS NULL OR l.project_id = ANY($2::uuid[]))
+     AND ($3::uuid IS NULL OR l.project_id = $3)
+     AND NOT EXISTS (SELECT 1 FROM journal o WHERE o.id = j.reverses_journal_id AND o.source_type = j.source_type)
+     AND NOT EXISTS (SELECT 1 FROM journal r WHERE r.reverses_journal_id = j.id AND r.source_type = j.source_type)
+   GROUP BY j.id, a.code, p.id
+  HAVING sum(l.debit) <> sum(l.credit)
+   ORDER BY j.txn_date DESC, j.posted_at DESC`;
+
+/** The drill-down behind a "Spend by category" slice: same rights and scope as the dashboard. */
+export async function spendDetail(
+  pool: pg.Pool,
+  actor: Actor,
+  categories: readonly CostCategory[],
+  projectId?: string,
+): Promise<SpendDetail> {
+  authorize(actor, 'dashboard', 'view');
+  if (projectId) assertId(projectId, 'Project');
+  const cats = COST_CATEGORIES.filter((c) => categories.includes(c));
+  const byCode = new Map(cats.map((c) => [CATEGORY_ACCOUNT[c], c]));
+  const seeNames = can(actor, 'payroll', 'view');
+  const rows = await withTenant(
+    pool,
+    ctx(actor),
+    async (c) =>
+      (
+        await c.query<{
+          date: string;
+          narration: string;
+          source_type: string;
+          code: string;
+          project_id: string;
+          project_code: string;
+          project_name: string;
+          net: string;
+        }>(SPEND_LINES, [[...byCode.keys()], projectScope(actor), projectId ?? null])
+      ).rows,
+  );
+  const projects = new Map<string, SpendDetail['byProject'][number]>();
+  const perCategory = new Map<CostCategory, Paise>(cats.map((c) => [c, 0]));
+  const entries: SpendEntry[] = rows.map((r) => {
+    const amount = fromDecimalString(r.net);
+    const category = byCode.get(r.code) ?? 'misc';
+    perCategory.set(category, (perCategory.get(category) ?? 0) + amount);
+    const p = projects.get(r.project_id) ?? {
+      projectId: r.project_id,
+      code: r.project_code,
+      name: r.project_name,
+      amount: 0,
+    };
+    p.amount += amount;
+    projects.set(r.project_id, p);
+    const hidden = !seeNames && PAYROLL_SOURCES.includes(r.source_type);
+    return {
+      date: r.date,
+      particulars: hidden ? 'Labour payment' : r.narration,
+      category,
+      projectId: r.project_id,
+      projectCode: r.project_code,
+      amount,
+    };
+  });
+  return {
+    categories: cats,
+    total: entries.reduce((n, e) => n + e.amount, 0),
+    byCategory: cats.map((c) => ({ category: c, amount: perCategory.get(c) ?? 0 })),
+    byProject: [...projects.values()].sort((a, b) => b.amount - a.amount),
+    entries: entries.slice(0, ENTRY_LIMIT),
+    truncated: entries.length > ENTRY_LIMIT,
+  };
+}
+
+/** Figures for one project's charts. Billing figures are present only with the invoices right. */
+export interface ProjectCharts {
+  spendByCategory: Record<CostCategory, Paise>;
+  spent: Paise;
+  costBudget: Paise;
+  contractValue: Paise;
+  billing: {
+    /** Tax invoices raised, excluding GST (against the contract value). */
+    invoicedTaxable: Paise;
+    /** Tax invoices raised, including GST (what the client owes in total). */
+    invoicedTotal: Paise;
+    /** Client receipts, advances included. */
+    received: Paise;
+  } | null;
+  /** The last six months, oldest first: sales (excl. GST, net of credit notes) and spend. */
+  months: { month: string; invoiced: Paise; spent: Paise }[];
+}
+
+/** The last `n` calendar months as YYYY-MM, oldest first, ending with this month (IST). */
+export function lastMonths(n: number, today: IsoDate = todayIn()): string[] {
+  const y = Number(today.slice(0, 4));
+  const m = Number(today.slice(5, 7)) - 1;
+  return Array.from({ length: n }, (_, i) => {
+    const d = new Date(Date.UTC(y, m - (n - 1 - i), 1));
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  });
+}
+
+export async function projectCharts(
+  pool: pg.Pool,
+  actor: Actor,
+  projectId: string,
+): Promise<ProjectCharts> {
+  authorize(actor, 'dashboard', 'view');
+  authorize(actor, 'projects', 'view', projectId);
+  assertId(projectId, 'Project');
+  const months = lastMonths(6);
+  const billing = can(actor, 'invoices', 'view', projectId);
+  return withTenant(pool, ctx(actor), async (c) => {
+    const p = await c.query<{ contract_value: string; cost_budget: string }>(
+      `SELECT contract_value::text, cost_budget::text FROM project
+        WHERE id = $1 AND ($2::uuid[] IS NULL OR id = ANY($2::uuid[]))`,
+      [projectId, projectScope(actor)],
+    );
+    const project = p.rows[0];
+    if (!project) throw new DomainError('NOT_FOUND', 'Project not found.');
+    const spend = await spendByCategory(c, [projectId]);
+    const b = billing
+      ? (
+          await c.query<{ taxable: string; total: string; received: string }>(
+            `SELECT (SELECT coalesce(sum(taxable), 0) FROM invoice WHERE project_id = $1 AND status <> 'cancelled')::text AS taxable,
+                    (SELECT coalesce(sum(total), 0) FROM invoice WHERE project_id = $1 AND status <> 'cancelled')::text AS total,
+                    (SELECT coalesce(sum(amount), 0) FROM receipt WHERE project_id = $1 AND deleted_at IS NULL)::text AS received`,
+            [projectId],
+          )
+        ).rows[0]
+      : undefined;
+    const m = await c.query<{ month: string; sales: string; cost: string }>(
+      `SELECT to_char(j.txn_date, 'YYYY-MM') AS month,
+              coalesce(sum(CASE WHEN a.code = '4000' THEN l.credit - l.debit END), 0)::text AS sales,
+              coalesce(sum(CASE WHEN a.code = ANY($2::text[]) THEN l.debit - l.credit END), 0)::text AS cost
+         FROM journal_line l JOIN journal j ON j.id = l.journal_id JOIN account a ON a.id = l.account_id
+        WHERE l.project_id = $1 AND to_char(j.txn_date, 'YYYY-MM') >= $3
+        GROUP BY 1`,
+      [projectId, COST_ACCOUNTS, months[0]],
+    );
+    const spent = COST_CATEGORIES.reduce((n, cat) => n + spend[cat], 0);
+    return {
+      spendByCategory: spend,
+      spent,
+      costBudget: fromDecimalString(project.cost_budget),
+      contractValue: fromDecimalString(project.contract_value),
+      billing: b
+        ? {
+            invoicedTaxable: fromDecimalString(b.taxable),
+            invoicedTotal: fromDecimalString(b.total),
+            received: fromDecimalString(b.received),
+          }
+        : null,
+      months: months.map((month) => {
+        const r = m.rows.find((x) => x.month === month);
+        return {
+          month,
+          invoiced: r ? fromDecimalString(r.sales) : 0,
+          spent: r ? fromDecimalString(r.cost) : 0,
+        };
+      }),
+    };
+  });
 }
 
 function alertsFor(waiting: number | null, projects: DashboardProject[]): DashboardAlert[] {

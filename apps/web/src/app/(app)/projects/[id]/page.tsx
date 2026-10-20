@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { DomainError, can, formatDate, isUuid } from '@csd/core';
 import { Pill } from '@/components/kit';
-import { EmptyState } from '@/components/ui';
+import { ProjectCharts } from '@/components/dashboard/project-charts';
 import { STATUS_LABEL, STATUS_TONE, rupees } from '@/lib/format';
 import { INVOICE_STATUS, PROFORMA_STATUS } from '@/lib/sales';
 import { getSession } from '@/lib/session';
@@ -37,6 +37,10 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
       ? services().proformas.list(actor, { projectId: id })
       : Promise.resolve([]),
   ]);
+  // Same audience as the dashboard (site engineers have none); the service checks it again.
+  const charts = can(actor, 'dashboard', 'view')
+    ? await services().dashboard.project(actor, id)
+    : null;
   const held = proformas
     .filter((p) => p.status !== 'converted' && p.status !== 'cancelled')
     .reduce((s, p) => s + p.advances, 0);
@@ -117,9 +121,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
           </div>
         </section>
       ) : null}
-      <EmptyState>
-        The ledger, spend by category, bills and profit &amp; loss tabs arrive with Purchases.
-      </EmptyState>
+      {charts ? <ProjectCharts projectId={id} d={charts} /> : null}
     </div>
   );
 }

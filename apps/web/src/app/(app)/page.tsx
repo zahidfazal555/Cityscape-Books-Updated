@@ -1,11 +1,12 @@
 import { can, formatDate, todayIn } from '@csd/core';
 import { redirect } from 'next/navigation';
 import {
-  AgeingBars,
   Alerts,
   Kpis,
   ProjectsTable,
-  SpendDonut,
+  ReceivablesAgeing,
+  SpendByCategory,
+  SpendByProject,
 } from '@/components/dashboard/dashboard-view';
 import { EmptyState } from '@/components/ui';
 import { istHour } from '@/lib/format';
@@ -35,14 +36,15 @@ export default async function DashboardPage() {
         <>
           <Alerts alerts={d.alerts} />
           <Kpis kpis={d.kpis} />
+          <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(340px,1fr))]">
+            <SpendByCategory spend={d.spendByCategory} />
+            <SpendByProject projects={d.projects} />
+            <ReceivablesAgeing ageing={d.ageing} />
+          </div>
           <section>
             <h2 className="mb-2 text-[15px] font-semibold">Active projects</h2>
             <ProjectsTable projects={d.projects} />
           </section>
-          <div className="grid gap-4 lg:grid-cols-2">
-            <SpendDonut spend={d.spendByCategory} />
-            <AgeingBars ageing={d.ageing} />
-          </div>
         </>
       )}
     </div>

@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import {
   AGEING_BUCKETS,
   AGEING_LABEL,
@@ -28,16 +29,22 @@ const TONE_CLASS = { none: 'text-muted', amber: 'text-warn', red: 'text-danger' 
 export default async function OutstandingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ side?: string }>;
+  searchParams: Promise<{ side?: string; bucket?: string }>;
 }) {
   const { actor } = await getSession();
   if (!can(actor, 'outstanding', 'view'))
     return <EmptyState>You do not have access to outstanding.</EmptyState>;
-  const side = (await searchParams).side === 'payables' ? 'payables' : 'receivables';
+  const sp = await searchParams;
+  const side = sp.side === 'payables' ? 'payables' : 'receivables';
+  // ?bucket= narrows the list to one ageing bucket (the dashboard donut links here).
+  const bucket = AGEING_BUCKETS.find((b) => b === sp.bucket);
+  const base = side === 'payables' ? '/outstanding?side=payables' : '/outstanding';
+  const hrefFor = (b: string) => `${base}${side === 'payables' ? '&' : '?'}bucket=${b}`;
   const data =
     side === 'receivables'
       ? await services().outstanding.receivables(actor)
       : await services().outstanding.payables(actor);
+  const rows = bucket ? data.rows.filter((r) => r.bucket === bucket) : data.rows;
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
@@ -81,18 +88,36 @@ export default async function OutstandingPage({
         </div>
         <ul className="mt-2 flex flex-wrap gap-4 text-[12px] text-muted">
           {AGEING_BUCKETS.map((b) => (
-            <li key={b} className="flex items-center gap-1.5">
-              <span
-                aria-hidden
-                className="h-2 w-2 rounded-full"
-                style={{ background: BUCKET_COLOUR[b] }}
-              />
-              {AGEING_LABEL[b]} <span className="num text-ink">{rupees(data.buckets[b])}</span>
+            <li key={b}>
+              <Link
+                href={bucket === b ? base : hrefFor(b)}
+                aria-current={bucket === b ? 'true' : undefined}
+                className={`flex items-center gap-1.5 rounded-md px-1.5 py-0.5 hover:bg-thead ${
+                  bucket === b ? 'bg-primary-tint text-ink ring-1 ring-primary' : ''
+                }`}
+              >
+                <span
+                  aria-hidden
+                  className="h-2 w-2 rounded-full"
+                  style={{ background: BUCKET_COLOUR[b] }}
+                />
+                {AGEING_LABEL[b]} <span className="num text-ink">{rupees(data.buckets[b])}</span>
+              </Link>
             </li>
           ))}
         </ul>
       </section>
-      {data.rows.length === 0 ? (
+      {bucket ? (
+        <p className="text-[13px] text-muted">
+          Showing <strong className="text-ink">{AGEING_LABEL[bucket]}</strong>
+          {bucket === 'current' ? ' (not yet due)' : ' days overdue'} only, {rows.length}{' '}
+          {rows.length === 1 ? 'document' : 'documents'}.{' '}
+          <Link href={base} className="text-primary hover:underline">
+            Show all
+          </Link>
+        </p>
+      ) : null}
+      {rows.length === 0 ? (
         <EmptyState>Nothing outstanding.</EmptyState>
       ) : (
         <Table columns="1.1fr 1.7fr 0.8fr 0.8fr repeat(5, 0.9fr) 0.8fr" minWidth={1200}>
@@ -108,7 +133,7 @@ export default async function OutstandingPage({
             ))}
             <span className="text-right">Days overdue</span>
           </Row>
-          {data.rows.map((r) => (
+          {rows.map((r) => (
             <Row key={r.id}>
               <span className="font-mono text-[12px]">{r.number}</span>
               <span className="truncate">{r.partyName}</span>

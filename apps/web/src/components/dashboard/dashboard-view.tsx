@@ -1,21 +1,32 @@
 import Link from 'next/link';
-import { AGEING_BUCKETS, AGEING_LABEL, CATEGORY_LABEL, COST_CATEGORIES } from '@csd/core';
+import {
+  AGEING_BUCKETS,
+  AGEING_LABEL,
+  CATEGORY_LABEL,
+  COST_CATEGORIES,
+  type CostCategory,
+} from '@csd/core';
 import type { Dashboard, DashboardAlert, DashboardProject } from '@csd/services';
 import { EmptyState } from '@/components/ui';
 import { rupees } from '@/lib/format';
+import { Donut, type DonutSlice } from './donut';
 
-/** One colour per cost category, in COST_CATEGORIES order. */
-const CATEGORY_COLOUR = [
-  '#1F5FAE',
-  '#2E9D8F',
-  '#E0A030',
-  '#7A5AF8',
-  '#D9534F',
-  '#5B6573',
-  '#3BA3E6',
-  '#A3B83A',
-  '#C76BA6',
-];
+/**
+ * Validated chart palette (dataviz reference, light): categorical slots in fixed order, a grey
+ * "Other", and a one-hue blue ramp for ordered buckets. Checked with validate_palette.js.
+ */
+export const SERIES = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4'] as const;
+export const OTHER = '#8a94a6';
+const AGE_RAMP = ['#86b6ef', '#5598e7', '#2a78d6', '#1c5cab', '#0d366b'] as const;
+
+/** Colour follows the category, never its rank: the five main ones keep a slot, the rest fold. */
+export const CATEGORY_SLOT: Partial<Record<CostCategory, string>> = {
+  material: SERIES[0],
+  labour: SERIES[1],
+  subcontract: SERIES[2],
+  transport: SERIES[3],
+  rent: SERIES[4],
+};
 
 /** README §2: amber `#FFF8EB`/`#F3DDAF` or red `#FEF3F2`/`#F6CFCB` banners. */
 export function Alerts({ alerts }: { alerts: DashboardAlert[] }) {
@@ -41,23 +52,95 @@ export function Alerts({ alerts }: { alerts: DashboardAlert[] }) {
   );
 }
 
+type Accent = 'blue' | 'orange' | 'aqua' | 'violet' | 'green';
+/** Card accents: a tinted icon and a top rule in the series hue; the number stays in ink. */
+const ACCENT: Record<Accent, { bar: string; chip: string }> = {
+  blue: { bar: 'bg-[#2a78d6]', chip: 'bg-[#e8f1fc] text-[#1c5cab]' },
+  orange: { bar: 'bg-[#eb6834]', chip: 'bg-[#fdeee7] text-[#b8481d]' },
+  aqua: { bar: 'bg-[#1baf7a]', chip: 'bg-[#e3f6ef] text-[#0f7d56]' },
+  violet: { bar: 'bg-[#6250d6]', chip: 'bg-[#eeebfb] text-[#4a3aa7]' },
+  green: { bar: 'bg-[#008300]', chip: 'bg-[#e3f3e3] text-[#006300]' },
+};
+
+const ICON: Record<string, string> = {
+  in: 'M12 19V5m0 14-5-5m5 5 5-5',
+  out: 'M12 5v14m0-14-5 5m5-5 5 5',
+  bank: 'M3 10h18M5 10v8m4-8v8m6-8v8m4-8v8M3 21h18M12 3 3 8h18z',
+  check: 'M9 12l2 2 4-4M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z',
+  rupee: 'M7 5h10M7 9h10M7 5c5 0 7 2 7 4s-2 4-7 4l7 6',
+};
+
+function Kpi({
+  label,
+  value,
+  accent,
+  icon,
+}: {
+  label: string;
+  value: string;
+  accent: Accent;
+  icon: string;
+}) {
+  const a = ACCENT[accent];
+  return (
+    <div className="relative overflow-hidden rounded-xl border border-line bg-white p-4 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+      <span aria-hidden className={`absolute inset-x-0 top-0 h-1 ${a.bar}`} />
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <dt className="text-xs font-medium text-muted">{label}</dt>
+          <dd className="num mt-1.5 text-[24px] font-semibold text-ink">{value}</dd>
+        </div>
+        <span
+          aria-hidden
+          className={`grid size-9 shrink-0 place-items-center rounded-lg ${a.chip}`}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            className="size-[18px]"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d={ICON[icon]} />
+          </svg>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function Kpis({ kpis }: { kpis: Dashboard['kpis'] }) {
-  const items: [string, string][] = [
-    ['Client receivables', rupees(kpis.receivables)],
-    ['Vendor payables', rupees(kpis.payables)],
+  const items: { label: string; value: string; accent: Accent; icon: string }[] = [
+    { label: 'Client receivables', value: rupees(kpis.receivables), accent: 'blue', icon: 'in' },
+    { label: 'Vendor payables', value: rupees(kpis.payables), accent: 'orange', icon: 'out' },
   ];
-  if (kpis.cashAndBank !== null) items.push(['Cash & bank balance', rupees(kpis.cashAndBank)]);
+  if (kpis.cashAndBank !== null)
+    items.push({
+      label: 'Cash & bank balance',
+      value: rupees(kpis.cashAndBank),
+      accent: 'aqua',
+      icon: 'bank',
+    });
   if (kpis.waitingApproval !== null)
-    items.push(['Waiting for your approval', String(kpis.waitingApproval)]);
+    items.push({
+      label: 'Waiting for your approval',
+      value: String(kpis.waitingApproval),
+      accent: 'violet',
+      icon: 'check',
+    });
   else if (kpis.collectedThisYear !== null)
-    items.push(['Collected this year', rupees(kpis.collectedThisYear)]);
+    items.push({
+      label: 'Collected this year',
+      value: rupees(kpis.collectedThisYear),
+      accent: 'green',
+      icon: 'rupee',
+    });
   return (
     <dl className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(220px,1fr))]">
-      {items.map(([k, v]) => (
-        <div key={k} className="rounded-lg border border-line bg-white p-4">
-          <dt className="text-xs text-muted">{k}</dt>
-          <dd className="num mt-1 text-[22px] font-semibold">{v}</dd>
-        </div>
+      {items.map((k) => (
+        <Kpi key={k.label} {...k} />
       ))}
     </dl>
   );
@@ -160,76 +243,79 @@ export function ProjectsTable({ projects }: { projects: DashboardProject[] }) {
   );
 }
 
-/** README §2: a conic-gradient donut (150px, 96px hole) with a legend. */
-export function SpendDonut({ spend }: { spend: Dashboard['spendByCategory'] }) {
-  const parts = COST_CATEGORIES.map((cat, i) => ({
-    cat,
-    amount: Math.max(0, spend[cat]),
-    colour: CATEGORY_COLOUR[i] ?? '#8A94A6',
-  })).filter((p) => p.amount > 0);
-  const total = parts.reduce((s, p) => s + p.amount, 0);
-  let at = 0;
-  const stops = parts.map((p) => {
-    const from = at;
-    at += (p.amount / total) * 100;
-    return `${p.colour} ${from}% ${at}%`;
-  });
+/** README §2 spend by category: the five main categories, the rest as "Other". */
+export function SpendByCategory({ spend }: { spend: Dashboard['spendByCategory'] }) {
+  const main = COST_CATEGORIES.filter((c) => CATEGORY_SLOT[c]);
+  const other = COST_CATEGORIES.filter((c) => !CATEGORY_SLOT[c]).reduce(
+    (n, c) => n + Math.max(0, spend[c]),
+    0,
+  );
+  const slices: DonutSlice[] = [
+    ...main.map((c) => ({
+      key: c,
+      label: CATEGORY_LABEL[c],
+      amount: Math.max(0, spend[c]),
+      colour: CATEGORY_SLOT[c] ?? OTHER,
+      href: `/spend/${c}`,
+    })),
+    {
+      key: 'other',
+      label: 'Other categories',
+      amount: other,
+      colour: OTHER,
+      href: '/spend/other',
+    },
+  ];
   return (
-    <section className="rounded-lg border border-line bg-white p-4">
-      <h2 className="mb-3 text-[15px] font-semibold">Spend by category</h2>
-      {total === 0 ? (
-        <p className="text-[13px] text-muted">No approved spending yet.</p>
-      ) : (
-        <div className="flex flex-wrap items-center gap-6">
-          <div
-            role="img"
-            aria-label={`Spend by category, total ${rupees(total)}`}
-            className="relative size-[150px] shrink-0 rounded-full"
-            style={{ background: `conic-gradient(${stops.join(', ')})` }}
-          >
-            <span className="absolute left-1/2 top-1/2 flex size-[96px] -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center rounded-full bg-white">
-              <span className="text-[11px] text-muted">Total</span>
-              <span className="num text-[13px] font-semibold">{rupees(total)}</span>
-            </span>
-          </div>
-          <ul className="flex min-w-[200px] flex-1 flex-col gap-1.5 text-[13px]">
-            {parts.map((p) => (
-              <li key={p.cat} className="flex items-center gap-2">
-                <span className="size-2.5 rounded-sm" style={{ background: p.colour }} />
-                <span className="flex-1">{CATEGORY_LABEL[p.cat]}</span>
-                <span className="num">{rupees(p.amount)}</span>
-                <span className="num w-10 text-right text-muted">
-                  {Math.round((p.amount / total) * 100)}%
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </section>
+    <Donut
+      title="Spend by category"
+      slices={slices}
+      totalLabel="Total spend"
+      empty="No approved spending yet."
+    />
   );
 }
 
-/** Receivables ageing: Current / 1–30 / 31–60 / 61–90 / 90+. */
-export function AgeingBars({ ageing }: { ageing: Dashboard['ageing'] }) {
-  const max = Math.max(1, ...AGEING_BUCKETS.map((b) => ageing[b]));
+/** Where the money goes: expense per active project, the five largest and "Other". */
+export function SpendByProject({ projects }: { projects: DashboardProject[] }) {
+  const sorted = [...projects].filter((p) => p.expense > 0).sort((a, b) => b.expense - a.expense);
+  const top = sorted.slice(0, 5);
+  const rest = sorted.slice(5).reduce((n, p) => n + p.expense, 0);
+  const slices: DonutSlice[] = [
+    ...top.map((p, i) => ({
+      key: p.projectId,
+      label: `${p.code} · ${p.name}`,
+      amount: p.expense,
+      colour: SERIES[i] ?? OTHER,
+      href: `/projects/${p.projectId}`,
+    })),
+    { key: 'other', label: 'Other projects', amount: rest, colour: OTHER, href: '/projects' },
+  ];
   return (
-    <section className="rounded-lg border border-line bg-white p-4">
-      <h2 className="mb-3 text-[15px] font-semibold">Receivables ageing (days overdue)</h2>
-      <ul className="flex flex-col gap-2.5 text-[13px]">
-        {AGEING_BUCKETS.map((b) => (
-          <li key={b} className="grid grid-cols-[64px_1fr_auto] items-center gap-3">
-            <span className="text-muted">{AGEING_LABEL[b]}</span>
-            <span className="h-2.5 overflow-hidden rounded-full bg-track">
-              <span
-                className={`block h-full ${b === 'current' ? 'bg-primary' : b === 'd90_plus' || b === 'd61_90' ? 'bg-danger' : 'bg-[#E0A030]'}`}
-                style={{ width: `${(ageing[b] / max) * 100}%` }}
-              />
-            </span>
-            <span className="num min-w-[88px] text-right">{rupees(ageing[b])}</span>
-          </li>
-        ))}
-      </ul>
-    </section>
+    <Donut
+      title="Spend by project"
+      slices={slices}
+      totalLabel="Active projects"
+      empty="No spending on active projects yet."
+    />
+  );
+}
+
+/** Receivables ageing (Current / 1–30 / 31–60 / 61–90 / 90+), older = darker on one blue ramp. */
+export function ReceivablesAgeing({ ageing }: { ageing: Dashboard['ageing'] }) {
+  const slices: DonutSlice[] = AGEING_BUCKETS.map((b, i) => ({
+    key: b,
+    label: b === 'current' ? 'Not yet due' : `${AGEING_LABEL[b]} days overdue`,
+    amount: Math.max(0, ageing[b]),
+    colour: AGE_RAMP[i] ?? OTHER,
+    href: `/outstanding?bucket=${b}`,
+  }));
+  return (
+    <Donut
+      title="Receivables by age"
+      slices={slices}
+      totalLabel="Receivables"
+      empty="Nothing receivable right now."
+    />
   );
 }

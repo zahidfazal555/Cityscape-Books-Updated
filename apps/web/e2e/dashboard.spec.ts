@@ -28,9 +28,8 @@ test('dashboard (README §2): the Owner sees KPIs, projects with net value, spen
   await expect(projects.getByRole('columnheader', { name: 'Net value' })).toBeVisible();
   await expect(projects.getByRole('row').nth(1)).toContainText('CSD-PRJ-');
   await expect(page.getByRole('heading', { name: 'Spend by category' })).toBeVisible();
-  await expect(
-    page.getByRole('heading', { name: 'Receivables ageing (days overdue)' }),
-  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Spend by project' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Receivables by age' })).toBeVisible();
   // A project row opens the project.
   await projects.getByRole('row').nth(1).getByRole('link').click();
   await expect(page).toHaveURL(/\/projects\/[0-9a-f-]{36}$/);

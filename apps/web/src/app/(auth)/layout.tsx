@@ -9,12 +9,20 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
         <Image
           src="/brand/cityscape-logo.png"
           alt="Cityscape Decors"
-          width={160}
+          width={188}
           height={40}
           priority
-          className="h-10 w-auto"
+          className="h-10 w-auto self-start"
         />
         <div className="max-w-md">
+          <p className="text-[30px] font-semibold leading-none tracking-[0.16em] text-heading sm:text-[36px]">
+            CITYSCAPE BOOKS
+          </p>
+          {/* The logo's teal-to-lime, as a short rule under the name. */}
+          <div
+            aria-hidden
+            className="mt-3 mb-8 h-[3px] w-28 rounded-full bg-gradient-to-r from-[#35c3e8] to-[#c6de3a]"
+          />
           <h1 className="text-[38px] font-semibold leading-tight text-heading">
             Every site, every rupee, in one set of books.
           </h1>

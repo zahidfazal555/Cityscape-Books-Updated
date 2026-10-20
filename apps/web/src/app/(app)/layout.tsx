@@ -22,7 +22,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         <Image
           src="/brand/cityscape-logo.png"
           alt="Cityscape Decors"
-          width={96}
+          width={113}
           height={24}
           className="h-6 w-auto"
         />

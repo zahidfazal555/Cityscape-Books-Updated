@@ -12,6 +12,7 @@ import {
   ReceiptsService,
   ReportsService,
   budgetLevel,
+  lastMonths,
 } from '../src/index.js';
 import {
   actorFor,
@@ -23,6 +24,7 @@ import {
   type Fixture,
 } from './helpers.js';
 import { clientProject, invoiceInput } from './sales-helpers.js';
+import { postJournal, withTenant } from '@csd/db';
 
 const dashboard = new DashboardService(appPool);
 const invoices = new InvoicesService(appPool);
@@ -181,6 +183,91 @@ describe('dashboard (README §2)', () => {
   it('users without the dashboard right are refused', async () => {
     const site = actorFor(f, await makeUser(f.companyId, 'site'), 'site', [a.projectId]);
     await expect(dashboard.summary(site)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+});
+
+describe('spend drill-down (dashboard slices)', () => {
+  it('a category opens into its projects and entries, adding up to the dashboard slice', async () => {
+    const summary = await dashboard.summary(owner);
+    const d = await dashboard.spend(owner, ['material']);
+    expect(d.total).toBe(summary.spendByCategory.material);
+    expect(d.byProject.map((p) => [p.projectId, p.amount])).toEqual([[a.projectId, 6_50_000_00]]);
+    expect(d.entries).toHaveLength(1);
+    expect(d.entries[0]).toMatchObject({
+      category: 'material',
+      projectId: a.projectId,
+      date: today,
+    });
+    expect(d.truncated).toBe(false);
+    // Several categories at once ("Other categories") are broken down per category.
+    const both = await dashboard.spend(owner, ['material', 'labour']);
+    expect(both.byCategory).toEqual([
+      { category: 'material', amount: 6_50_000_00 },
+      { category: 'labour', amount: 8_00_000_00 },
+    ]);
+    expect(both.byProject[0]?.projectId).toBe(b.projectId);
+  });
+
+  it('follows project scope, and hides who was paid wages from users without payroll', async () => {
+    expect((await dashboard.spend(manager, ['labour'])).total).toBe(0);
+    await withTenant(appPool, { companyId: f.companyId, userId: f.ownerId }, (c) =>
+      postJournal(c, {
+        txnDate: today,
+        sourceType: 'wage_payment',
+        narration: 'Wages to Ravi K',
+        lines: [
+          { accountCode: '5010', debit: 1_000_00, projectId: a.projectId },
+          { accountCode: '1000', credit: 1_000_00 },
+        ],
+      }),
+    );
+    const scoped = await dashboard.spend(manager, ['labour']);
+    expect(scoped.entries.map((e) => e.particulars)).toEqual(['Labour payment']);
+    const full = await dashboard.spend(owner, ['labour']);
+    expect(full.entries.map((e) => e.particulars)).toContain('Wages to Ravi K');
+    const site = actorFor(f, await makeUser(f.companyId, 'site'), 'site', [a.projectId]);
+    await expect(dashboard.spend(site, ['labour'])).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+});
+
+describe('project charts', () => {
+  it('a project shows its own spend split, budget, billing and this month in the trend', async () => {
+    const d = await dashboard.project(owner, a.projectId);
+    expect(d.spendByCategory.material).toBe(6_50_000_00);
+    expect(d.costBudget).toBe(7_50_000_00);
+    expect(d.contractValue).toBe(10_00_000_00);
+    expect(d.billing).toEqual({
+      invoicedTaxable: 10_00_000_00,
+      invoicedTotal: 11_80_000_00,
+      received: 50_000_00,
+    });
+    expect(d.months).toHaveLength(6);
+    expect(d.months[5]).toMatchObject({ month: today.slice(0, 7), invoiced: 10_00_000_00 });
+    expect(d.months[5]?.spent).toBe(d.spent);
+    // Drill-down from a project slice stays on that project.
+    const material = await dashboard.spend(owner, ['material'], b.projectId);
+    expect(material.total).toBe(0);
+  });
+
+  it('follows project scope; billing needs the invoices right', async () => {
+    await expect(dashboard.project(manager, b.projectId)).rejects.toMatchObject({ status: 403 });
+    const noBilling: Actor = {
+      ...owner,
+      role: 'admin',
+      rights: { ...admin.rights, invoices: 'none' },
+    };
+    expect((await dashboard.project(noBilling, a.projectId)).billing).toBeNull();
+  });
+
+  it('the trend window is six calendar months ending this month', () => {
+    expect(lastMonths(6, '2026-02-15')).toEqual([
+      '2025-09',
+      '2025-10',
+      '2025-11',
+      '2025-12',
+      '2026-01',
+      '2026-02',
+    ]);
   });
 });
 

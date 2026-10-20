@@ -3,6 +3,13 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
 
 ## [Unreleased]
 ### Added
+- Dashboard charts: KPI cards with colour accents; donuts for spend by category, spend by project
+  and receivables by age (validated colour-blind-safe palette, legend with values, hover). Every
+  slice opens its detail: a spend drill-down page per category (by project, every entry; wage
+  payees hidden without the payroll right), the project, or Outstanding filtered by age bucket.
+- Project page charts: the project's spend by category, budget and billing meters, and a six-month
+  invoiced vs spent trend.
+- Sign-in page: "CITYSCAPE BOOKS" wordmark; the logo keeps its proportions.
 - Settings → Company (`PATCH /api/v1/settings`, owner-only): edit the name, legal name, GSTIN,
   state, address, phone, email and bank details printed on every document. The GSTIN must match
   the state; every change is audited with the bank account masked.
