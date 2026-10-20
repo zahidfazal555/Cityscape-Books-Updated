@@ -1,4 +1,4 @@
-import { DomainError, type Actor } from '@csd/core';
+import { DomainError, assertId, type Actor } from '@csd/core';
 import {
   mapDbError,
   withTenant,
@@ -246,6 +246,62 @@ export class AuthService {
         action: 'password_change',
         entity: 'user',
         entityId: actor.userId,
+        ip: client.ip,
+      });
+    });
+  }
+
+  /**
+   * Owner-only: set another user's password directly, from Users & access (for staff without
+   * email, or when mail is down). Same policy as everywhere (length, breach list, not the name or
+   * email); the user is signed out everywhere, unlocked, and any open invite or reset link stops
+   * working. Audited. The owner's own password goes through changePassword (current password
+   * required); a company has only one owner (app_user_one_owner).
+   */
+  async setPasswordFor(
+    actor: Actor,
+    userId: string,
+    newPassword: string,
+    client: ClientInfo,
+  ): Promise<void> {
+    if (actor.role !== 'owner' || !actor.active) {
+      throw new DomainError('FORBIDDEN', 'Only the owner can set passwords.');
+    }
+    assertId(userId, 'User');
+    if (userId === actor.userId) {
+      throw new DomainError(
+        'VALIDATION',
+        'Change your own password with your current password.',
+        'password',
+      );
+    }
+    const ctx = { companyId: actor.companyId, userId: actor.userId };
+    const target = await withTenant(this.deps.pool, ctx, async (c) => {
+      const { rows } = await c.query<{ email: string; name: string }>(
+        'SELECT email, name FROM app_user WHERE id = $1',
+        [userId],
+      );
+      return rows[0];
+    });
+    if (!target) throw new DomainError('NOT_FOUND', 'User not found.');
+    await assertPasswordPolicy(newPassword, target, this.deps.breach);
+    const newHash = await hashPassword(newPassword);
+    await withTenant(this.deps.pool, ctx, async (c) => {
+      await c.query(
+        `UPDATE app_user SET password_hash = $2, password_changed_at = now(), failed_attempts = 0,
+                locked_until = NULL
+          WHERE id = $1`,
+        [userId, newHash],
+      );
+      await c.query(
+        'UPDATE auth_token SET used_at = now() WHERE user_id = $1 AND used_at IS NULL',
+        [userId],
+      );
+      await revokeUserSessions(c, userId);
+      await writeAudit(c, {
+        action: 'password_set_by_owner',
+        entity: 'user',
+        entityId: userId,
         ip: client.ip,
       });
     });

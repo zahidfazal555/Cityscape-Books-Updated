@@ -1,4 +1,5 @@
 import Image from 'next/image';
+import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { SignOutButton } from '../(app)/sign-out';
 
@@ -16,7 +17,15 @@ export default function MobileLayout({ children }: { children: ReactNode }) {
           height={24}
           className="h-6 w-auto"
         />
-        <SignOutButton large />
+        <div className="flex items-center gap-2">
+          <Link
+            href="/account/password"
+            className="flex h-11 items-center rounded-md border border-input px-3 text-[13px] text-body hover:bg-thead"
+          >
+            Password
+          </Link>
+          <SignOutButton large />
+        </div>
       </header>
       <main className="mx-auto max-w-[430px] px-4 pb-24 pt-4">{children}</main>
     </div>

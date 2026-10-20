@@ -3,6 +3,10 @@ All notable changes to this project are recorded here. Format: Keep a Changelog.
 
 ## [Unreleased]
 ### Added
+- Passwords: the owner sets any other user's password from Users & access (same policy; the user is
+  signed out everywhere, unlocked, and open invite/reset links stop working; audited as
+  `password_set_by_owner`). Everyone can change their own password at /account/password, linked
+  from the top bar (and the phone layout).
 - Dashboard charts: KPI cards with colour accents; donuts for spend by category, spend by project
   and receivables by age (validated colour-blind-safe palette, legend with values, hover). Every
   slice opens its detail: a spend drill-down page per category (by project, every entry; wage

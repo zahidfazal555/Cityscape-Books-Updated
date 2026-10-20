@@ -20,6 +20,8 @@ export const changePassword = z.object({
   currentPassword: z.string().max(128),
   newPassword: z.string().max(128),
 });
+/** Owner sets another user's password (Users & access). */
+export const setUserPassword = z.object({ password: z.string().max(128) });
 export const lockDate = z.object({ lockDate: z.string().nullable() });
 
 /** Expense list and export filters (FR-11.1). */

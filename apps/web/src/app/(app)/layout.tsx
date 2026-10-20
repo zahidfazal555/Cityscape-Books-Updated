@@ -1,4 +1,5 @@
 import Image from 'next/image';
+import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { financialYear, todayIn } from '@csd/core';
 import { ROLE_LABEL } from '@/lib/labels';
@@ -34,6 +35,12 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
             <div className="text-[13px] font-medium">{name}</div>
             <div className="text-xs text-muted">{ROLE_LABEL[actor.role]}</div>
           </div>
+          <Link
+            href="/account/password"
+            className="flex h-8 items-center rounded-md border border-input px-3 text-[13px] text-body hover:bg-thead"
+          >
+            Change password
+          </Link>
           <SignOutButton />
         </div>
       </header>
